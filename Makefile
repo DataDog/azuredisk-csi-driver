@@ -146,7 +146,7 @@ e2e-teardown:
 
 .PHONY: azuredisk
 azuredisk:
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -mod vendor -o _output/${ARCH}/${PLUGIN_NAME} ./pkg/azurediskplugin
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -mod vendor -o _output/${ARCH}/${PLUGIN_NAME} -buildvcs=false ./pkg/azurediskplugin
 
 .PHONY: azuredisk-v2
 azuredisk-v2:
