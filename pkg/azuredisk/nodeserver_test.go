@@ -20,12 +20,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/azuredisk/mockcorev1"
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/azuredisk/mockkubeclient"
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/azuredisk/mocknode"
 	"syscall"
 	"testing"
 
@@ -222,6 +227,17 @@ func TestEnsureMountPoint(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func getFakeDriverWithNodeClient(t *testing.T) FakeDriver {
+	d, _ := NewFakeDriver(t)
+	ctrl := gomock.NewController(t)
+	corev1 := mockcorev1.NewMockInterface(ctrl)
+	node := mocknode.NewMockNodeInterface(ctrl)
+	d.getCloud().KubeClient = mockkubeclient.NewMockInterface(ctrl)
+	d.getCloud().KubeClient.(*mockkubeclient.MockInterface).EXPECT().CoreV1().Return(corev1).AnyTimes()
+	d.getCloud().KubeClient.CoreV1().(*mockcorev1.MockInterface).EXPECT().Nodes().Return(node).AnyTimes()
+	return d
+}
+
 func TestNodeGetInfo(t *testing.T) {
 	notFoundErr := &retry.Error{
 		HTTPStatusCode: http.StatusNotFound,
@@ -240,6 +256,13 @@ func TestNodeGetInfo(t *testing.T) {
 			expectedErr:  nil,
 			skipOnDarwin: true,
 			setupFunc: func(t *testing.T, d FakeDriver) {
+				labels := map[string]string{consts.WellKnownTopologyKey: fmt.Sprintf("%s-%s", testVMLocation, testVMZones[0]), consts.InstanceTypeKey: string(testVMSize)}
+				node := &v1.Node{
+					ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				}
+
+				d.getCloud().KubeClient.CoreV1().Nodes().(*mocknode.MockNodeInterface).EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(node, nil)
+
 				d.getCloud().VirtualMachinesClient.(*mockvmclient.MockInterface).EXPECT().
 					Get(gomock.Any(), testResourceGroup, testVMName, gomock.Any()).
 					Return(testVM, nil).
@@ -269,6 +292,7 @@ func TestNodeGetInfo(t *testing.T) {
 			desc:        "[Failure] Get node information for non-existing VM",
 			expectedErr: status.Error(codes.Internal, fmt.Sprintf("getNodeInfoFromLabels on node(%s) failed with %s", "fakeNodeID", "kubeClient is nil")),
 			setupFunc: func(t *testing.T, d FakeDriver) {
+				d.getCloud().KubeClient = nil
 				d.getCloud().VirtualMachinesClient.(*mockvmclient.MockInterface).EXPECT().
 					Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(compute.VirtualMachine{}, notFoundErr).
@@ -287,12 +311,12 @@ func TestNodeGetInfo(t *testing.T) {
 			if test.skipOnDarwin && runtime.GOOS == "darwin" {
 				t.Skip("Skip test case on Darwin")
 			}
-			d, err := NewFakeDriver(t)
-			require.NoError(t, err)
+			d := getFakeDriverWithNodeClient(t)
 
 			test.setupFunc(t, d)
 
 			resp, err := d.NodeGetInfo(context.TODO(), &csi.NodeGetInfoRequest{})
+
 			require.Equal(t, test.expectedErr, err)
 			if err == nil {
 				test.validateFunc(t, resp)
