@@ -1,6 +1,8 @@
 ARG BASE_IMAGE
 
-FROM golang:1.20.5 as builder
+FROM registry.ddbuild.io/images/mirror/golang:1.20 as builder
+ARG TARGETARCH
+ENV ARCH=$TARGETARCH
 COPY . /src
 WORKDIR /src
 RUN make azuredisk
