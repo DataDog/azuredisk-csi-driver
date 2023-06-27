@@ -183,6 +183,10 @@ func TestGetCachingMode(t *testing.T) {
 func TestGetKubeConfig(t *testing.T) {
 	// skip for now as this is very flaky on Windows
 	skipIfTestingOnWindows(t)
+	// unset those to prevent loading incluster config during CI
+	os.Unsetenv("KUBERNETES_SERVICE_HOST")
+	os.Unsetenv("KUBERNETES_SERVICE_PORT")
+
 	emptyKubeConfig := "empty-Kube-Config"
 	validKubeConfig := "valid-Kube-Config"
 	fakeContent := `
@@ -267,6 +271,10 @@ users:
 }
 
 func TestGetCloudProvider(t *testing.T) {
+	// unset those to prevent loading incluster config during CI
+	os.Unsetenv("KUBERNETES_SERVICE_HOST")
+	os.Unsetenv("KUBERNETES_SERVICE_PORT")
+
 	fakeCredFile, err := testutil.GetWorkDirPath("fake-cred-file.json")
 	if err != nil {
 		t.Errorf("GetWorkDirPath failed with %v", err)
