@@ -22,6 +22,7 @@ import (
 	"fmt"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/mount-utils"
 	"log"
 	"net/http"
 	"os"
@@ -1435,6 +1436,11 @@ func TestNodePublishVolumeIdempotentMount(t *testing.T) {
 	_ = makeDir(sourceTest)
 	_ = makeDir(targetTest)
 	d, _ := NewFakeDriver(t)
+	m := mount.NewFakeMounter([]mount.MountPoint{})
+	d.setMounter(&mount.SafeFormatAndMount{
+		Interface: m,
+		Exec:      &mounter.FakeSafeMounter{},
+	})
 
 	volumeCap := csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}
 	req := csi.NodePublishVolumeRequest{VolumeCapability: &csi.VolumeCapability{AccessMode: &volumeCap, AccessType: stdVolCap},
