@@ -50,26 +50,32 @@ import (
 
 // DriverOptions defines driver parameters specified in driver deployment
 type DriverOptions struct {
-	NodeID                     string
-	DriverName                 string
-	VolumeAttachLimit          int64
-	EnablePerfOptimization     bool
-	CloudConfigSecretName      string
-	CloudConfigSecretNamespace string
-	CustomUserAgent            string
-	UserAgentSuffix            string
-	UseCSIProxyGAInterface     bool
-	EnableDiskOnlineResize     bool
-	AllowEmptyCloudConfig      bool
-	EnableAsyncAttach          bool
-	EnableListVolumes          bool
-	EnableListSnapshots        bool
-	SupportZone                bool
-	GetNodeInfoFromLabels      bool
-	EnableDiskCapacityCheck    bool
-	DisableUpdateCache         bool
-	VMSSCacheTTLInSeconds      int64
-	VMType                     string
+	NodeID                       string
+	DriverName                   string
+	VolumeAttachLimit            int64
+	EnablePerfOptimization       bool
+	CloudConfigSecretName        string
+	CloudConfigSecretNamespace   string
+	CustomUserAgent              string
+	UserAgentSuffix              string
+	UseCSIProxyGAInterface       bool
+	EnableDiskOnlineResize       bool
+	AllowEmptyCloudConfig        bool
+	EnableAsyncAttach            bool
+	EnableListVolumes            bool
+	EnableListSnapshots          bool
+	SupportZone                  bool
+	GetNodeInfoFromLabels        bool
+	EnableDiskCapacityCheck      bool
+	DisableUpdateCache           bool
+	EnableTrafficManager         bool
+	TrafficManagerPort           int64
+	AttachDetachInitialDelayInMs int64
+	VMSSCacheTTLInSeconds        int64
+	VMType                       string
+	EnableWindowsHostProcess     bool
+	GetNodeIDFromIMDS            bool
+	EnableOtelTracing            bool
 }
 
 // CSIDriver defines the interface for a CSI driver.
@@ -88,30 +94,36 @@ type hostUtil interface {
 // DriverCore contains fields common to both the V1 and V2 driver, and implements all interfaces of CSI drivers
 type DriverCore struct {
 	csicommon.CSIDriver
-	perfOptimizationEnabled    bool
-	cloudConfigSecretName      string
-	cloudConfigSecretNamespace string
-	customUserAgent            string
-	userAgentSuffix            string
-	kubeconfig                 string
-	cloud                      *azure.Cloud
-	mounter                    *mount.SafeFormatAndMount
-	deviceHelper               optimization.Interface
-	nodeInfo                   *optimization.NodeInfo
-	ioHandler                  azureutils.IOHandler
-	hostUtil                   hostUtil
-	useCSIProxyGAInterface     bool
-	enableDiskOnlineResize     bool
-	allowEmptyCloudConfig      bool
-	enableAsyncAttach          bool
-	enableListVolumes          bool
-	enableListSnapshots        bool
-	supportZone                bool
-	getNodeInfoFromLabels      bool
-	enableDiskCapacityCheck    bool
-	disableUpdateCache         bool
-	vmssCacheTTLInSeconds      int64
-	vmType                     string
+	perfOptimizationEnabled      bool
+	cloudConfigSecretName        string
+	cloudConfigSecretNamespace   string
+	customUserAgent              string
+	userAgentSuffix              string
+	kubeconfig                   string
+	cloud                        *azure.Cloud
+	mounter                      *mount.SafeFormatAndMount
+	deviceHelper                 optimization.Interface
+	nodeInfo                     *optimization.NodeInfo
+	ioHandler                    azureutils.IOHandler
+	hostUtil                     hostUtil
+	useCSIProxyGAInterface       bool
+	enableDiskOnlineResize       bool
+	allowEmptyCloudConfig        bool
+	enableAsyncAttach            bool
+	enableListVolumes            bool
+	enableListSnapshots          bool
+	supportZone                  bool
+	getNodeInfoFromLabels        bool
+	enableDiskCapacityCheck      bool
+	disableUpdateCache           bool
+	enableTrafficManager         bool
+	trafficManagerPort           int64
+	vmssCacheTTLInSeconds        int64
+	attachDetachInitialDelayInMs int64
+	vmType                       string
+	enableWindowsHostProcess     bool
+	getNodeIDFromIMDS            bool
+	enableOtelTracing            bool
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -147,6 +159,9 @@ func newDriverV1(options *DriverOptions) *Driver {
 	driver.disableUpdateCache = options.DisableUpdateCache
 	driver.vmssCacheTTLInSeconds = options.VMSSCacheTTLInSeconds
 	driver.vmType = options.VMType
+	driver.enableWindowsHostProcess = options.EnableWindowsHostProcess
+	driver.getNodeIDFromIMDS = options.GetNodeIDFromIMDS
+	driver.enableOtelTracing = options.EnableOtelTracing
 	driver.volumeLocks = volumehelper.NewVolumeLocks()
 	driver.ioHandler = azureutils.NewOSIOHandler()
 	driver.hostUtil = hostutil.NewHostUtil()
@@ -262,7 +277,7 @@ func (d *Driver) Run(endpoint, kubeconfig string, disableAVSetNodes, testingMock
 
 	s := csicommon.NewNonBlockingGRPCServer()
 	// Driver d act as IdentityServer, ControllerServer and NodeServer
-	s.Start(endpoint, d, d, d, testingMock)
+	s.Start(endpoint, d, d, d, testingMock, d.enableOtelTracing)
 	s.Wait()
 }
 
