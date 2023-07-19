@@ -70,6 +70,7 @@ type DriverOptions struct {
 	DisableUpdateCache         bool
 	VMSSCacheTTLInSeconds      int64
 	VMType                     string
+	EnableOtelTracing          bool
 }
 
 // CSIDriver defines the interface for a CSI driver.
@@ -112,6 +113,7 @@ type DriverCore struct {
 	disableUpdateCache         bool
 	vmssCacheTTLInSeconds      int64
 	vmType                     string
+	enableOtelTracing          bool
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -147,6 +149,7 @@ func newDriverV1(options *DriverOptions) *Driver {
 	driver.disableUpdateCache = options.DisableUpdateCache
 	driver.vmssCacheTTLInSeconds = options.VMSSCacheTTLInSeconds
 	driver.vmType = options.VMType
+	driver.enableOtelTracing = options.EnableOtelTracing
 	driver.volumeLocks = volumehelper.NewVolumeLocks()
 	driver.ioHandler = azureutils.NewOSIOHandler()
 	driver.hostUtil = hostutil.NewHostUtil()
@@ -262,7 +265,7 @@ func (d *Driver) Run(endpoint, kubeconfig string, disableAVSetNodes, testingMock
 
 	s := csicommon.NewNonBlockingGRPCServer()
 	// Driver d act as IdentityServer, ControllerServer and NodeServer
-	s.Start(endpoint, d, d, d, testingMock)
+	s.Start(endpoint, d, d, d, testingMock, d.enableOtelTracing)
 	s.Wait()
 }
 

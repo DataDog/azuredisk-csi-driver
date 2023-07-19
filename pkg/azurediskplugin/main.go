@@ -62,6 +62,7 @@ var (
 	enableDiskCapacityCheck    = flag.Bool("enable-disk-capacity-check", false, "boolean flag to enable volume capacity check in CreateVolume")
 	disableUpdateCache         = flag.Bool("disable-update-cache", false, "boolean flag to disable update cache during disk attach/detach")
 	vmssCacheTTLInSeconds      = flag.Int64("vmss-cache-ttl-seconds", -1, "vmss cache TTL in seconds (600 by default)")
+	enableOtelTracing          = flag.Bool("enable-otel-tracing", false, "If set, enable opentelemetry tracing for the driver. The tracing is disabled by default. Configure the exporter endpoint with OTEL_EXPORTER_OTLP_ENDPOINT and other env variables, see https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#general-sdk-configuration.")
 )
 
 func main() {
@@ -86,6 +87,13 @@ func main() {
 }
 
 func handle() {
+	// Enable tracing as soon as possible
+	if *enableOtelTracing {
+		if err := azuredisk.InitOtelTracing(); err != nil {
+			klog.Fatalf("Failed to init otel tracing: %v", err.Error())
+		}
+	}
+
 	driverOptions := azuredisk.DriverOptions{
 		NodeID:                     *nodeID,
 		DriverName:                 *driverName,
@@ -107,6 +115,7 @@ func handle() {
 		DisableUpdateCache:         *disableUpdateCache,
 		VMSSCacheTTLInSeconds:      *vmssCacheTTLInSeconds,
 		VMType:                     *vmType,
+		EnableOtelTracing:          *enableOtelTracing,
 	}
 	driver := azuredisk.NewDriver(&driverOptions)
 	if driver == nil {
