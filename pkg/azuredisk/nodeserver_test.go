@@ -262,7 +262,7 @@ func TestNodeGetInfo(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				}
 
-				d.getCloud().KubeClient.CoreV1().Nodes().(*mocknode.MockNodeInterface).EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(node, nil)
+				d.getCloud().KubeClient.CoreV1().Nodes().(*mocknode.MockNodeInterface).EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(node, nil).AnyTimes()
 
 				d.getCloud().VirtualMachinesClient.(*mockvmclient.MockInterface).EXPECT().
 					Get(gomock.Any(), testResourceGroup, testVMName, gomock.Any()).
