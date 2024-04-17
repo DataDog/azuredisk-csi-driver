@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"k8s.io/mount-utils"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,6 +28,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/mount-utils"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -247,6 +251,16 @@ func TestNodeGetInfo(t *testing.T) {
 			expectedErr:  nil,
 			skipOnDarwin: true,
 			setupFunc: func(t *testing.T, d FakeDriver) {
+				node := &v1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: testVMName,
+						Labels: map[string]string{
+							consts.WellKnownTopologyKey: fmt.Sprintf("%s-%s", testVMLocation, *testVMZones[0]),
+							consts.InstanceTypeKey:      string(testVMSize),
+						},
+					},
+				}
+				d.getCloud().KubeClient = fake.NewSimpleClientset(node)
 				mockVMClient := d.getCloud().ComputeClientFactory.GetVirtualMachineClient().(*mockvmclient.MockInterface)
 				mockVMClient.EXPECT().
 					Get(gomock.Any(), testResourceGroup, testVMName, gomock.Any()).
