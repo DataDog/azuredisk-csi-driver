@@ -20,6 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/mount-utils"
 	"log"
 	"net/http"
@@ -245,6 +248,17 @@ func TestNodeGetInfo(t *testing.T) {
 			expectedErr:  nil,
 			skipOnDarwin: true,
 			setupFunc: func(t *testing.T, d FakeDriver) {
+				node := &v1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: testVMName,
+						Labels: map[string]string{
+							consts.WellKnownTopologyKey: fmt.Sprintf("%s-%s", testVMLocation, testVMZones[0]),
+							consts.InstanceTypeKey:      string(testVMSize),
+						},
+					},
+				}
+				d.getCloud().KubeClient = fake.NewSimpleClientset(node)
+
 				d.getCloud().VirtualMachinesClient.(*mockvmclient.MockInterface).EXPECT().
 					Get(gomock.Any(), testResourceGroup, testVMName, gomock.Any()).
 					Return(testVM, nil).
