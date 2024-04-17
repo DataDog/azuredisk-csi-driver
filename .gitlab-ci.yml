@@ -4,11 +4,10 @@ test:
   stage: verify
   tags: [ "arch:amd64" ]
   image: registry.ddbuild.io/images/mirror/golang:1.20
-  variables:
-    # unset those to prevent loading incluster config during CI
-    KUBERNETES_SERVICE_HOST: ""
-    KUBERNETES_SERVICE_PORT: ""
   script:
+    # unset those to prevent loading incluster config during CI
+    - export KUBERNETES_SERVICE_HOST=""
+    - export KUBERNETES_SERVICE_PORT=""
     - go test ./pkg/... -v
 
 build-docker-image:
