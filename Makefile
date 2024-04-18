@@ -148,6 +148,10 @@ e2e-teardown:
 azuredisk:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -mod vendor -o _output/${ARCH}/${PLUGIN_NAME} -buildvcs=false ./pkg/azurediskplugin
 
+.PHONY: azuredisk-debug
+azuredisk-debug:
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -a -ldflags ${LDFLAGS} -gcflags "all=-N -l" -mod vendor -o _output/${ARCH}/${PLUGIN_NAME} -buildvcs=false ./pkg/azurediskplugin
+
 .PHONY: azuredisk-v2
 azuredisk-v2:
 	BUILD_V2=true $(MAKE) azuredisk
