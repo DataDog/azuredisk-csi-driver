@@ -1,6 +1,7 @@
 ARG BASE_IMAGE
+ARG BUILDER_IMAGE
 
-FROM registry.ddbuild.io/images/mirror/golang:1.20 as builder
+FROM $BUILDER_IMAGE as builder
 ARG TARGETARCH
 ENV ARCH=$TARGETARCH
 COPY . /src
