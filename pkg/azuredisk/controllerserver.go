@@ -487,6 +487,85 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		}
 	}
 
+	tags := disk.Tags
+	if tags != nil && tags[consts.SkuNameField] != nil {
+		skuName := *tags[consts.SkuNameField]
+		state := ptr.Deref(disk.Properties.ProvisioningState, "")
+		completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+
+		// First check: Has the SKU changed yet?
+		if skuName != "" && armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+			// SKU hasn't changed - we always need to block here regardless of flag
+			// Handle timeout logic
+			var conversionStartTime time.Time
+			if startTimeStr, ok := tags[consts.ConversionStartTimeTag]; ok && startTimeStr != nil {
+				conversionStartTime, _ = time.Parse(time.RFC3339, *startTimeStr)
+			} else if d.diskOfflineConversionTimeoutInSec > 0 {
+				// Record start time if this is the first attempt
+				nowStr := time.Now().UTC().Format(time.RFC3339)
+				startTimeVal := nowStr
+
+				d.updateDiskTags(ctx, diskURI, consts.ConversionStartTimeTag, startTimeVal)
+
+				conversionStartTime = time.Now().UTC()
+			}
+
+			// Check if timeout has been exceeded
+			if d.diskOfflineConversionTimeoutInSec > 0 && !conversionStartTime.IsZero() {
+				timeoutDuration := time.Duration(d.diskOfflineConversionTimeoutInSec) * time.Second
+				if time.Since(conversionStartTime) > timeoutDuration {
+					klog.Errorf("Disk %s SKU change timed out after %v: still at %.2f%% complete",
+						diskURI, timeoutDuration, completion)
+					return nil, status.Errorf(codes.FailedPrecondition,
+						"Disk SKU change timed out after %v, still at %.2f%% complete",
+						timeoutDuration, completion)
+				}
+			}
+
+			klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
+				diskURI, *disk.SKU.Name, skuName, state, completion)
+			return nil, status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%)",
+				diskURI, *disk.SKU.Name, skuName, state, completion)
+		} else {
+			// The SKU has successfully changed
+
+			// Second check: If waitForFullDiskConversion is enabled, check if conversion is 100% complete
+			if d.waitForFullDiskConversion && completion < 100.0 {
+				// Handle timeout logic for full conversion
+				var conversionStartTime time.Time
+				if startTimeStr, ok := tags[consts.ConversionStartTimeTag]; ok && startTimeStr != nil {
+					conversionStartTime, _ = time.Parse(time.RFC3339, *startTimeStr)
+				}
+
+				// Check if timeout has been exceeded
+				if d.diskOfflineConversionTimeoutInSec > 0 && !conversionStartTime.IsZero() {
+					timeoutDuration := time.Duration(d.diskOfflineConversionTimeoutInSec) * time.Second
+					if time.Since(conversionStartTime) > timeoutDuration {
+						klog.Errorf("Disk %s full conversion timed out after %v: %.2f%% complete", diskURI, timeoutDuration, completion)
+						return nil, status.Errorf(codes.FailedPrecondition,
+							"Full disk conversion timed out after %v, only %.2f%% complete",
+							timeoutDuration, completion)
+					}
+				}
+
+				klog.V(1).Infof("Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete.",
+					diskURI, *disk.SKU.Name, completion)
+				return nil, status.Errorf(codes.Unavailable,
+					"Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete",
+					diskURI, *disk.SKU.Name, completion)
+			} else {
+				// SKU has changed and either full conversion not required or conversion is complete
+				klog.V(1).Infof("Disk %s converted to %s: %.2f%% complete. Proceeding with attachment.",
+					diskURI, *disk.SKU.Name, completion)
+
+				// Clean up the start time tag
+				if tags[consts.ConversionStartTimeTag] != nil {
+					d.updateDiskTags(ctx, diskURI, consts.ConversionStartTimeTag, "")
+				}
+			}
+		}
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
@@ -1299,4 +1378,43 @@ func (d *Driver) GetSourceDiskSize(ctx context.Context, subsID, resourceGroup, d
 		return nil, result, status.Error(codes.Internal, fmt.Sprintf("DiskSizeGB for disk (%s) in resourcegroup (%s) is nil", diskName, resourceGroup))
 	}
 	return (*result.Properties).DiskSizeGB, result, nil
+}
+
+func (d *Driver) updateDiskTags(ctx context.Context, diskURI, key, value string) {
+	subscriptionID, resourceGroup, diskName, err := azureutils.GetInfoFromURI(diskURI)
+	if err != nil {
+		klog.Warningf("Failed to get info from diskURI: %q, %v", diskURI, err)
+		return
+	}
+
+	diskClient, err := d.clientFactory.GetDiskClientForSub(subscriptionID)
+	if err != nil {
+		klog.Warningf("getDiskClientForSub(%s) failed with %v", subscriptionID, err)
+		return
+	}
+
+	result, err := diskClient.Get(ctx, resourceGroup, diskName)
+	if err != nil {
+		klog.Warningf("get disk(%s) under rg(%s) failed with %v", diskName, resourceGroup, err)
+		return
+	}
+
+	if result.Tags == nil {
+		result.Tags = make(map[string]*string)
+	}
+
+	if value == "" {
+		delete(result.Tags, key)
+	} else {
+		result.Tags[key] = &value
+	}
+
+	// Create DiskUpdate object with just the tags
+	diskUpdate := armcompute.DiskUpdate{
+		Tags: result.Tags,
+	}
+
+	if _, err = diskClient.Patch(ctx, resourceGroup, diskName, diskUpdate); err != nil {
+		klog.Warningf("update disk(%s) tags under rg(%s) failed with %v", diskName, resourceGroup, err)
+	}
 }
