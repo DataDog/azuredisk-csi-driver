@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -413,7 +414,6 @@ func (c *ManagedDiskController) ResizeDisk(ctx context.Context, diskURI string, 
 // ModifyDisk: modify disk
 func (c *ManagedDiskController) ModifyDisk(ctx context.Context, options *ManagedDiskOptions) error {
 	klog.V(4).Infof("azureDisk - modifying managed disk URI:%s, StorageAccountType:%s, DiskIOPSReadWrite:%s, DiskMBpsReadWrite:%s", options.SourceResourceID, options.StorageAccountType, options.DiskIOPSReadWrite, options.DiskMBpsReadWrite)
-
 	subsID, rg, diskName, err := azureutils.GetInfoFromURI(options.SourceResourceID)
 	if err != nil {
 		return err
@@ -474,6 +474,24 @@ func (c *ManagedDiskController) ModifyDisk(ctx context.Context, options *Managed
 	}
 
 	if model.SKU != nil || model.Properties != nil {
+		if result.Tags == nil {
+			result.Tags = make(map[string]*string)
+		}
+		SKUTag := ptr.Deref(result.Tags[azureconsts.SkuNameField], "")
+		if model.SKU != nil && *model.SKU != *result.SKU && *model.SKU.Name == armcompute.DiskStorageAccountTypesPremiumV2LRS && SKUTag != string(*model.SKU.Name) {
+			targetSKUName := string(*model.SKU.Name)
+			sourceSKUName := string(*result.SKU.Name)
+			klog.V(1).Infof("azureDisk - modifying disk(%s) from %s to %s can't be performed online, tagging disk for offline conversion", diskName, sourceSKUName, targetSKUName)
+			model.Tags = result.Tags
+			model.Tags[azureconsts.SkuNameField] = &targetSKUName
+			model.Tags[azureconsts.ConversionStartTimeTag] = ptr.To(time.Now().Format(time.RFC3339))
+			model.SKU = result.SKU
+			if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
+				return err
+			}
+			// Force modification to be retried once the disk is detached
+			return fmt.Errorf("azureDisk - modifying disk(%s) from %s to %s can't be performed online, tagged disk for offline conversion", diskName, sourceSKUName, targetSKUName)
+		}
 		if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
 			return err
 		}

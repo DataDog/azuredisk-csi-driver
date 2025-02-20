@@ -487,6 +487,10 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		}
 	}
 
+	if err = d.waitForDiskConversion(ctx, disk, diskURI); err != nil {
+		return nil, err
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
@@ -585,6 +589,68 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	}
 	isOperationSucceeded = true
 	return &csi.ControllerPublishVolumeResponse{PublishContext: publishContext}, nil
+}
+
+func (d *Driver) isTimeOutExceeded(conversionStartTime *string) (bool, time.Duration) {
+	if conversionStartTime == nil {
+		return false, 0
+	}
+	startTime, err := time.Parse(time.RFC3339, *conversionStartTime)
+	if err != nil {
+		klog.Warningf("failed to parse conversionStartTime %s: %v", *conversionStartTime, err)
+		return false, 0
+	}
+	duration := time.Since(startTime)
+	return duration > d.diskOfflineConversionTimeout, duration
+}
+
+// Delay attachment when changing disk SKU, this returns an error if the SKU change is in progress
+func (d *Driver) waitForDiskConversion(ctx context.Context, disk *armcompute.Disk, diskURI string) error {
+	// no tag indicating a SKU change in progress
+	tags := disk.Tags
+	if tags == nil {
+		return nil
+	}
+	skuName := ptr.Deref(tags[consts.SkuNameField], "")
+	if skuName == "" {
+		return nil
+	}
+
+	state := ptr.Deref(disk.Properties.ProvisioningState, "")
+	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+
+	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+		klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
+		return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
+	}
+
+	if !d.waitForFullDiskConversion {
+		klog.V(1).Infof("Disk %s conversion to %s initiated. Proceeding with attachment.", diskURI, *disk.SKU.Name)
+	}
+
+	// Waiting for full disk conversion.
+	timeOutExceeded, duration := d.isTimeOutExceeded(tags[consts.ConversionStartTimeTag])
+	if d.waitForFullDiskConversion && completion < 100.0 {
+		// Keep waiting
+		if !timeOutExceeded {
+			klog.V(1).Infof("Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete.", diskURI, *disk.SKU.Name, completion)
+			return status.Errorf(codes.Unavailable, "Disk %s SKU changed to %s, waiting for full conversion: %.2f%%%% complete", diskURI, *disk.SKU.Name, completion)
+		}
+		// Conversion timed out
+		klog.Errorf("Disk %s full conversion timed out after %v: %.2f%% complete. Proceeding with attachment. Performance of the disk might be degraded", diskURI, d.diskOfflineConversionTimeout, completion)
+	} else {
+		klog.V(1).Infof("Disk %s converted to %s: %.2f%% complete in %s. Proceeding with attachment.", diskURI, *disk.SKU.Name, completion, duration)
+	}
+
+	// Clean up the start time tag
+	if _, ok := tags[consts.ConversionStartTimeTag]; ok {
+		delete(tags, consts.ConversionStartTimeTag)
+		d.updateDiskTags(ctx, diskURI, tags)
+	}
+
+	return nil
 }
 
 // ControllerUnpublishVolume detach an azure disk from a required node
@@ -1287,4 +1353,25 @@ func (d *Driver) GetSourceDiskSize(ctx context.Context, subsID, resourceGroup, d
 		return nil, result, status.Error(codes.Internal, fmt.Sprintf("DiskSizeGB for disk (%s) in resourcegroup (%s) is nil", diskName, resourceGroup))
 	}
 	return (*result.Properties).DiskSizeGB, result, nil
+}
+
+func (d *Driver) updateDiskTags(ctx context.Context, diskURI string, tags map[string]*string) {
+	subscriptionID, resourceGroup, diskName, err := azureutils.GetInfoFromURI(diskURI)
+	if err != nil {
+		klog.Warningf("Failed to get info from diskURI: %q, %v", diskURI, err)
+		return
+	}
+
+	diskClient, err := d.clientFactory.GetDiskClientForSub(subscriptionID)
+	if err != nil {
+		klog.Warningf("getDiskClientForSub(%s) failed with %v", subscriptionID, err)
+		return
+	}
+
+	diskUpdate := armcompute.DiskUpdate{
+		Tags: tags,
+	}
+	if _, err = diskClient.Patch(ctx, resourceGroup, diskName, diskUpdate); err != nil {
+		klog.Warningf("update disk(%s) tags under rg(%s) failed with %v", diskName, resourceGroup, err)
+	}
 }
