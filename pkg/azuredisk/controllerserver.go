@@ -484,6 +484,24 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume not found, failed with error: %v", err))
 	}
 
+	klog.V(1).Infof("attaching disk %s to node %s with volume context %v", diskURI, req.GetNodeId(), req.GetVolumeContext())
+
+	tags := disk.Tags
+	if tags != nil && tags[consts.SkuNameField] != nil {
+		skuName := *tags[consts.SkuNameField]
+		if skuName != "" && armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+			conversionInfo := ""
+			if disk.Properties != nil && disk.Properties.PropertyUpdatesInProgress != nil {
+				conversionInfo += fmt.Sprintf("Conversion to %v", *disk.Properties.PropertyUpdatesInProgress)
+			}
+			if disk.Properties.CompletionPercent != nil {
+				conversionInfo += fmt.Sprintf(" (%f%%)", *disk.Properties.CompletionPercent)
+			}
+			klog.V(1).Infof("Disk %s has different SKU name than requested. %s", diskURI, conversionInfo)
+			return nil, status.Error(codes.Unavailable, "Disk has different SKU name than requested. This probably means it's in the process of being converted.")
+		}
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
