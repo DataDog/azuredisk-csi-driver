@@ -2904,11 +2904,150 @@ func TestGetSourceDiskSize(t *testing.T) {
 
 func getFakeDriverWithKubeClient(ctrl *gomock.Controller) FakeDriver {
 	d, _ := NewFakeDriver(ctrl)
-
 	corev1 := mockcorev1.NewMockInterface(ctrl)
 	persistentvolume := mockpersistentvolume.NewMockInterface(ctrl)
 	d.getCloud().KubeClient = mockkubeclient.NewMockInterface(ctrl)
 	d.getCloud().KubeClient.(*mockkubeclient.MockInterface).EXPECT().CoreV1().Return(corev1).AnyTimes()
 	d.getCloud().KubeClient.CoreV1().(*mockcorev1.MockInterface).EXPECT().PersistentVolumes().Return(persistentvolume).AnyTimes()
 	return d
+}
+
+func TestWaitForDiskConversion(t *testing.T) {
+	testCases := []struct {
+		name                          string
+		diskProperties                *armcompute.DiskProperties
+		diskTags                      map[string]*string
+		diskSKU                       *armcompute.DiskSKU
+		waitForFullDiskConversion     bool
+		conversionStartTime           string
+		OfflineConversionTimeoutInSec int64
+		expectError                   bool
+		expectedErrorContainsString   string
+	}{
+		{
+			name: "No SKU change in progress",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(100)),
+			},
+			diskTags: map[string]*string{},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumLRS),
+			},
+			waitForFullDiskConversion: true,
+			expectError:               false,
+		},
+		{
+			name: "SKU change in progress",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Updating"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField: ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumLRS),
+			},
+			waitForFullDiskConversion:   true,
+			expectError:                 true,
+			expectedErrorContainsString: "SKU change from Premium_LRS to PremiumV2_LRS in progress",
+		},
+		{
+			name: "SKU changed but conversion not 100% complete, wait enabled",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField:           ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+				consts.ConversionStartTimeTag: ptr.To(time.Now().Format(time.RFC3339))},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumV2LRS),
+			},
+			waitForFullDiskConversion:     true,
+			OfflineConversionTimeoutInSec: 100,
+			expectError:                   true,
+			expectedErrorContainsString:   "waiting for full conversion: 50.00%% complete",
+		},
+		{
+			name: "SKU changed but conversion not 100% complete, wait disabled",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField: ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumV2LRS),
+			},
+			waitForFullDiskConversion: false,
+			expectError:               false,
+		},
+		{
+			name: "SKU changed conversion 100% complete, wait enabled",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(100)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField: ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumV2LRS),
+			},
+			waitForFullDiskConversion: true,
+			expectError:               false,
+		},
+		{
+			name: "Conversion timeout exceeded",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField:           ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+				consts.ConversionStartTimeTag: ptr.To(time.Now().Add(-1 * time.Hour).Format(time.RFC3339)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumV2LRS),
+			},
+			waitForFullDiskConversion:     true,
+			OfflineConversionTimeoutInSec: 60,    // 1 minute timeout
+			expectError:                   false, // No error because timeout is exceeded
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cntl := gomock.NewController(t)
+			defer cntl.Finish()
+			d := getFakeDriverWithKubeClient(cntl)
+			d.setWaitForFullDiskConversion(tc.waitForFullDiskConversion)
+			d.setDiskOfflineConversionTimeout(time.Second * time.Duration(tc.OfflineConversionTimeoutInSec))
+
+			disk := &armcompute.Disk{
+				Properties: tc.diskProperties,
+				SKU:        tc.diskSKU,
+				Tags:       tc.diskTags,
+			}
+			diskClient := mock_diskclient.NewMockInterface(cntl)
+			d.getClientFactory().(*mock_azclient.MockClientFactory).EXPECT().GetDiskClientForSub(gomock.Any()).Return(diskClient, nil).AnyTimes()
+			diskClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(disk, nil).AnyTimes()
+
+			err := d.waitForDiskConversion(context.Background(), disk, "test-disk-uri")
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tc.expectedErrorContainsString != "" && !strings.Contains(err.Error(), tc.expectedErrorContainsString) {
+					t.Errorf("Error message doesn't contain expected string.\nExpected: %s\nGot: %s",
+						tc.expectedErrorContainsString, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+		})
+	}
 }
