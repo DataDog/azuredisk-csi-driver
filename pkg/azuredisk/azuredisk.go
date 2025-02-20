@@ -134,9 +134,11 @@ type DriverCore struct {
 	removeNotReadyTaint          bool
 	kubeClient                   kubernetes.Interface
 	// a timed cache storing volume stats <volumeID, volumeStats>
-	volStatsCache           azcache.Resource
-	maxConcurrentFormat     int64
-	concurrentFormatTimeout int64
+	volStatsCache                azcache.Resource
+	maxConcurrentFormat          int64
+	concurrentFormatTimeout      int64
+	waitForFullDiskConversion    bool
+	diskOfflineConversionTimeout time.Duration
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -191,6 +193,8 @@ func newDriverV1(options *DriverOptions) *Driver {
 	driver.removeNotReadyTaint = options.RemoveNotReadyTaint
 	driver.maxConcurrentFormat = options.MaxConcurrentFormat
 	driver.concurrentFormatTimeout = options.ConcurrentFormatTimeout
+	driver.waitForFullDiskConversion = options.WaitForFullDiskConversion
+	driver.diskOfflineConversionTimeout = time.Duration(options.DiskOfflineConversionTimeoutInSec) * time.Second
 	driver.volumeLocks = volumehelper.NewVolumeLocks()
 	driver.ioHandler = azureutils.NewOSIOHandler()
 	driver.hostUtil = hostutil.NewHostUtil()

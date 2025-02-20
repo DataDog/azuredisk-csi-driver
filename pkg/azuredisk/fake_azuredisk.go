@@ -96,6 +96,10 @@ type FakeDriver interface {
 	setThrottlingCache(key string, value string)
 	getUsedLunsFromVolumeAttachments(context.Context, string) ([]int, error)
 	getUsedLunsFromNode(context.Context, types.NodeName) ([]int, error)
+
+	waitForDiskConversion(ctx context.Context, disk *armcompute.Disk, diskURI string) error
+	setWaitForFullDiskConversion(wait bool)
+	setDiskOfflineConversionTimeout(timeout time.Duration)
 }
 
 type fakeDriverV1 struct {
@@ -188,4 +192,12 @@ func createVolumeCapability(accessMode csi.VolumeCapability_AccessMode_Mode) *cs
 			Mode: accessMode,
 		},
 	}
+}
+
+func (d *fakeDriverV1) setWaitForFullDiskConversion(wait bool) {
+	d.waitForFullDiskConversion = wait
+}
+
+func (d *fakeDriverV1) setDiskOfflineConversionTimeout(timeout time.Duration) {
+	d.diskOfflineConversionTimeout = timeout
 }
