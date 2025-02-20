@@ -484,6 +484,17 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume not found, failed with error: %v", err))
 	}
 
+	tags := disk.Tags
+	if tags != nil && tags[consts.SkuNameField] != nil {
+		skuName := *tags[consts.SkuNameField]
+		if skuName != "" && armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+			state := ptr.Deref(disk.Properties.ProvisioningState, "")
+			completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+			klog.V(1).Infof("Migrating disk %s from %s to %s: %s (%f%%).", diskURI, *disk.SKU.Name, skuName, state, completion)
+			return nil, status.Errorf(codes.Unavailable, "Migrating disk %s from %s to %s: %s (%f%%", diskURI, *disk.SKU.Name, skuName, state, completion)
+		}
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
