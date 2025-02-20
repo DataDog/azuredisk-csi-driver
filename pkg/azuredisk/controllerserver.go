@@ -484,6 +484,22 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume not found, failed with error: %v", err))
 	}
 
+	klog.V(1).Infof("attaching disk %s to node %s with volume context %v", diskURI, req.GetNodeId(), req.GetVolumeContext())
+
+	var skuName armcompute.DiskStorageAccountTypes
+	for k, v := range req.GetVolumeContext() {
+		// Our storage class parameters use camelCase for keys, but Azure SDK uses lower case
+		if strings.ToLower(k) == consts.SkuNameField {
+			skuName = armcompute.DiskStorageAccountTypes(v)
+			break
+		}
+	}
+
+	if skuName == armcompute.DiskStorageAccountTypesPremiumV2LRS && skuName != *disk.SKU.Name {
+		//TODO check storage.SkuConversionStatusInProgress?
+		return nil, status.Error(codes.Unavailable, "Disk has different SKU name than requested. This probably means it's in the process of being converted.")
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
