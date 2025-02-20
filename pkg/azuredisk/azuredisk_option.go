@@ -38,34 +38,36 @@ type DriverOptions struct {
 	EnableOtelTracing          bool
 
 	//only used in v1
-	EnableDiskOnlineResize       bool
-	AllowEmptyCloudConfig        bool
-	EnableListVolumes            bool
-	EnableListSnapshots          bool
-	SupportZone                  bool
-	GetNodeInfoFromLabels        bool
-	EnableDiskCapacityCheck      bool
-	DisableUpdateCache           bool
-	EnableTrafficManager         bool
-	TrafficManagerPort           int64
-	AttachDetachInitialDelayInMs int64
-	VMSSCacheTTLInSeconds        int64
-	VolStatsCacheExpireInMinutes int64
-	GetDiskTimeoutInSeconds      int64
-	VMType                       string
-	EnableWindowsHostProcess     bool
-	ListDisksUsingWinCIM         bool
-	GetNodeIDFromIMDS            bool
-	WaitForSnapshotReady         bool
-	CheckDiskLUNCollision        bool
-	ForceDetachBackoff           bool
-	Kubeconfig                   string
-	Endpoint                     string
-	DisableAVSetNodes            bool
-	RemoveNotReadyTaint          bool
-	MaxConcurrentFormat          int64
-	ConcurrentFormatTimeout      int64
-	GoMaxProcs                   int64
+	EnableDiskOnlineResize            bool
+	AllowEmptyCloudConfig             bool
+	EnableListVolumes                 bool
+	EnableListSnapshots               bool
+	SupportZone                       bool
+	GetNodeInfoFromLabels             bool
+	EnableDiskCapacityCheck           bool
+	DisableUpdateCache                bool
+	EnableTrafficManager              bool
+	TrafficManagerPort                int64
+	AttachDetachInitialDelayInMs      int64
+	VMSSCacheTTLInSeconds             int64
+	VolStatsCacheExpireInMinutes      int64
+	GetDiskTimeoutInSeconds           int64
+	VMType                            string
+	EnableWindowsHostProcess          bool
+	ListDisksUsingWinCIM              bool
+	GetNodeIDFromIMDS                 bool
+	WaitForSnapshotReady              bool
+	CheckDiskLUNCollision             bool
+	ForceDetachBackoff                bool
+	Kubeconfig                        string
+	Endpoint                          string
+	DisableAVSetNodes                 bool
+	RemoveNotReadyTaint               bool
+	MaxConcurrentFormat               int64
+	ConcurrentFormatTimeout           int64
+	GoMaxProcs                        int64
+	WaitForFullDiskConversion         bool
+	DiskOfflineConversionTimeoutInSec int64
 }
 
 func (o *DriverOptions) AddFlags() *flag.FlagSet {
@@ -113,5 +115,7 @@ func (o *DriverOptions) AddFlags() *flag.FlagSet {
 	fs.Int64Var(&o.MaxConcurrentFormat, "max-concurrent-format", 2, "maximum number of concurrent format exec calls")
 	fs.Int64Var(&o.ConcurrentFormatTimeout, "concurrent-format-timeout", 300, "maximum time in seconds duration of a format operation before its concurrency token is released")
 	fs.Int64Var(&o.GoMaxProcs, "max-procs", 2, "maximum number of CPUs that can be executing simultaneously in golang runtime")
+	fs.BoolVar(&o.WaitForFullDiskConversion, "wait-for-full-disk-conversion", true, "boolean flag to wait for disk conversion to be 100% complete")
+	fs.Int64Var(&o.DiskOfflineConversionTimeoutInSec, "disk-offline-conversion-timeout-sec", 600, "timeout in seconds for disk offline conversion")
 	return fs
 }
