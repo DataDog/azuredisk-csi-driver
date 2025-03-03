@@ -77,6 +77,17 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	if _, err = azureutils.ParseDiskParameters(req.GetMutableParameters()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "Failed parsing disk mutable parameters: %v", err)
 	}
+	mergedParams := make(map[string]string, len(req.GetParameters())+len(req.GetMutableParameters()))
+	for k, v := range req.GetParameters() {
+		mergedParams[k] = v
+	}
+	for k, v := range req.GetMutableParameters() {
+		mergedParams[k] = v
+	}
+	diskParams, err = azureutils.ParseDiskParameters(mergedParams)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Failed parsing disk merged parameters: %v", err)
+	}
 
 	name := req.GetName()
 	if len(name) == 0 {
