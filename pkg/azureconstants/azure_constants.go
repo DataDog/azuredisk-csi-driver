@@ -107,6 +107,7 @@ const (
 	// define tag value delimiter and default is comma
 	TagValueDelimiterField = "tagvaluedelimiter"
 	AzureDiskDriverTag     = "kubernetes-azure-dd"
+	ConversionStartTimeTag = "conversionStartTime"
 )
 
 var (

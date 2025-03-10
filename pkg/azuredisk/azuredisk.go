@@ -132,9 +132,11 @@ type DriverCore struct {
 	removeNotReadyTaint          bool
 	kubeClient                   kubernetes.Interface
 	// a timed cache storing volume stats <volumeID, volumeStats>
-	volStatsCache           azcache.Resource
-	maxConcurrentFormat     int64
-	concurrentFormatTimeout int64
+	volStatsCache              azcache.Resource
+	maxConcurrentFormat        int64
+	concurrentFormatTimeout    int64
+	waitForFullDiskConversion  bool  // When true, wait for conversion to be 100% complete
+	diskConversionTimeoutInSec int64 // Timeout for both modes
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
