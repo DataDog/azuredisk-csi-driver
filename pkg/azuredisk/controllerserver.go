@@ -528,6 +528,7 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 			// The SKU has successfully changed
 
 			// Second check: If waitForFullDiskConversion is enabled, check if conversion is 100% complete
+			d.waitForFullDiskConversion = true
 			if d.waitForFullDiskConversion && completion < 100.0 {
 				// Handle timeout logic for full conversion
 				var conversionStartTime time.Time
