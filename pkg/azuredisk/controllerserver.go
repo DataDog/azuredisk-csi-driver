@@ -487,83 +487,8 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		}
 	}
 
-	tags := disk.Tags
-	if tags != nil && tags[consts.SkuNameField] != nil {
-		skuName := *tags[consts.SkuNameField]
-		state := ptr.Deref(disk.Properties.ProvisioningState, "")
-		completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
-
-		// First check: Has the SKU changed yet?
-		if skuName != "" && armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
-			// SKU hasn't changed - we always need to block here regardless of flag
-			// Handle timeout logic
-			var conversionStartTime time.Time
-			if startTimeStr, ok := tags[consts.ConversionStartTimeTag]; ok && startTimeStr != nil {
-				conversionStartTime, _ = time.Parse(time.RFC3339, *startTimeStr)
-			} else if d.diskOfflineConversionTimeoutInSec > 0 {
-				// Record start time if this is the first attempt
-				nowStr := time.Now().UTC().Format(time.RFC3339)
-				startTimeVal := nowStr
-
-				d.updateDiskTags(ctx, diskURI, consts.ConversionStartTimeTag, startTimeVal)
-
-				conversionStartTime = time.Now().UTC()
-			}
-
-			// Check if timeout has been exceeded
-			if d.diskOfflineConversionTimeoutInSec > 0 && !conversionStartTime.IsZero() {
-				timeoutDuration := time.Duration(d.diskOfflineConversionTimeoutInSec) * time.Second
-				if time.Since(conversionStartTime) > timeoutDuration {
-					klog.Errorf("Disk %s SKU change timed out after %v: still at %.2f%% complete",
-						diskURI, timeoutDuration, completion)
-					return nil, status.Errorf(codes.FailedPrecondition,
-						"Disk SKU change timed out after %v, still at %.2f%% complete",
-						timeoutDuration, completion)
-				}
-			}
-
-			klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
-				diskURI, *disk.SKU.Name, skuName, state, completion)
-			return nil, status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%)",
-				diskURI, *disk.SKU.Name, skuName, state, completion)
-		} else {
-			// The SKU has successfully changed
-
-			// Second check: If waitForFullDiskConversion is enabled, check if conversion is 100% complete
-			if d.waitForFullDiskConversion && completion < 100.0 {
-				// Handle timeout logic for full conversion
-				var conversionStartTime time.Time
-				if startTimeStr, ok := tags[consts.ConversionStartTimeTag]; ok && startTimeStr != nil {
-					conversionStartTime, _ = time.Parse(time.RFC3339, *startTimeStr)
-				}
-
-				// Check if timeout has been exceeded
-				if d.diskOfflineConversionTimeoutInSec > 0 && !conversionStartTime.IsZero() {
-					timeoutDuration := time.Duration(d.diskOfflineConversionTimeoutInSec) * time.Second
-					if time.Since(conversionStartTime) > timeoutDuration {
-						klog.Errorf("Disk %s full conversion timed out after %v: %.2f%% complete", diskURI, timeoutDuration, completion)
-						return nil, status.Errorf(codes.FailedPrecondition,
-							"Full disk conversion timed out after %v, only %.2f%% complete",
-							timeoutDuration, completion)
-					}
-				}
-
-				klog.V(1).Infof("Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete.",
-					diskURI, *disk.SKU.Name, completion)
-				return nil, status.Errorf(codes.Unavailable,
-					"Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete",
-					diskURI, *disk.SKU.Name, completion)
-			} else {
-				// SKU has changed and either full conversion not required or conversion is complete
-				klog.V(1).Infof("Disk %s converted to %s: %.2f%% complete. Proceeding with attachment.",
-					diskURI, *disk.SKU.Name, completion)
-
-				// Clean up the start time tag
-				if tags[consts.ConversionStartTimeTag] != nil {
-					d.updateDiskTags(ctx, diskURI, consts.ConversionStartTimeTag, "")
-				}
-			}
-		}
+	if err = d.attachmentPreHook(ctx, disk, diskURI); err != nil {
+		return nil, err
 	}
 
 	nodeID := req.GetNodeId()
@@ -664,6 +589,58 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	}
 	isOperationSucceeded = true
 	return &csi.ControllerPublishVolumeResponse{PublishContext: publishContext}, nil
+}
+
+// Delay attachment when changing disk SKU, this returns an error if the SKU change is in progress
+func (d *Driver) attachmentPreHook(ctx context.Context, disk *armcompute.Disk, diskURI string) error {
+	tags := disk.Tags
+	if tags != nil && tags[consts.SkuNameField] != nil {
+		skuName := *tags[consts.SkuNameField]
+		state := ptr.Deref(disk.Properties.ProvisioningState, "")
+		completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+
+		// First check: Has the SKU changed yet?
+		if skuName != "" && armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+			klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
+				diskURI, *disk.SKU.Name, skuName, state, completion)
+			return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%)",
+				diskURI, *disk.SKU.Name, skuName, state, completion)
+		} else {
+			// The SKU has successfully changed
+			// If waitForFullDiskConversion is enabled, check if conversion is 100% complete
+			if d.waitForFullDiskConversion && completion < 100.0 {
+				// Handle timeout logic for full conversion
+				var conversionStartTime time.Time
+				if startTimeStr, ok := tags[consts.ConversionStartTimeTag]; ok && startTimeStr != nil {
+					conversionStartTime, _ = time.Parse(time.RFC3339, *startTimeStr)
+				}
+
+				// Check if timeout has been exceeded
+				if d.diskOfflineConversionTimeoutInSec > 0 && !conversionStartTime.IsZero() {
+					timeoutDuration := time.Duration(d.diskOfflineConversionTimeoutInSec) * time.Second
+					if time.Since(conversionStartTime) > timeoutDuration {
+						klog.Errorf("Disk %s full conversion timed out after %v: %.2f%% complete. Proceeding with attachment. Performance of the disk might be degraded", diskURI, timeoutDuration, completion)
+					} else {
+						klog.V(1).Infof("Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete.",
+							diskURI, *disk.SKU.Name, completion)
+						return status.Errorf(codes.Unavailable,
+							"Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete",
+							diskURI, *disk.SKU.Name, completion)
+					}
+				}
+			} else {
+				// SKU has changed and either full conversion not required or conversion is complete
+				klog.V(1).Infof("Disk %s converted to %s: %.2f%% complete. Proceeding with attachment.",
+					diskURI, *disk.SKU.Name, completion)
+
+			}
+			// Clean up the start time tag
+			if tags[consts.ConversionStartTimeTag] != nil {
+				d.updateDiskTags(ctx, diskURI, consts.ConversionStartTimeTag, "")
+			}
+		}
+	}
+	return nil
 }
 
 // ControllerUnpublishVolume detach an azure disk from a required node

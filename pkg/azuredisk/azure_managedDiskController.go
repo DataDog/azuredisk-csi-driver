@@ -484,21 +484,15 @@ func (c *ManagedDiskController) ModifyDisk(ctx context.Context, options *Managed
 		if result.Tags == nil {
 			result.Tags = make(map[string]*string)
 		}
-		SKUTag := ""
-		if result.Tags["skuname"] != nil {
-			SKUTag = *result.Tags["skuname"]
-		}
+		SKUTag := ptr.Deref(result.Tags[azureconsts.SkuNameField], "")
 		if model.SKU != nil && *model.SKU != *result.SKU && *model.SKU.Name == armcompute.DiskStorageAccountTypesPremiumV2LRS && SKUTag != string(*model.SKU.Name) {
 			targetSKUName := string(*model.SKU.Name)
 			sourceSKUName := string(*result.SKU.Name)
 			klog.V(1).Infof("azureDisk - modifying disk(%s) from %s to %s can't be performed online, tagging disk for offline conversion", diskName, sourceSKUName, targetSKUName)
 			model.Tags = result.Tags
-			model.Tags["skuname"] = &targetSKUName
+			model.Tags[azureconsts.SkuNameField] = &targetSKUName
+			model.Tags[azureconsts.ConversionStartTimeTag] = ptr.To(time.Now().Format(time.RFC3339))
 			model.SKU = result.SKU
-			if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
-				return err
-			}
-			return fmt.Errorf("azureDisk - modifying disk(%s) from %s to %s can't be performed online, tagged disk for offline conversion", diskName, sourceSKUName, targetSKUName)
 		}
 		if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
 			return err
