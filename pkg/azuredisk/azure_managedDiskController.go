@@ -420,7 +420,6 @@ func (c *ManagedDiskController) ResizeDisk(ctx context.Context, diskURI string, 
 // ModifyDisk: modify disk
 func (c *ManagedDiskController) ModifyDisk(ctx context.Context, options *ManagedDiskOptions) error {
 	klog.V(4).Infof("azureDisk - modifying managed disk URI:%s, StorageAccountType:%s, DiskIOPSReadWrite:%s, DiskMBpsReadWrite:%s", options.SourceResourceID, options.StorageAccountType, options.DiskIOPSReadWrite, options.DiskMBpsReadWrite)
-
 	subsID, rg, diskName, err := azureutils.GetInfoFromURI(options.SourceResourceID)
 	if err != nil {
 		return err

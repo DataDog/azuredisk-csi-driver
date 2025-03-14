@@ -116,6 +116,6 @@ func (o *DriverOptions) AddFlags() *flag.FlagSet {
 	fs.Int64Var(&o.ConcurrentFormatTimeout, "concurrent-format-timeout", 300, "maximum time in seconds duration of a format operation before its concurrency token is released")
 	fs.Int64Var(&o.GoMaxProcs, "max-procs", 2, "maximum number of CPUs that can be executing simultaneously in golang runtime")
 	fs.BoolVar(&o.WaitForFullDiskConversion, "wait-for-full-disk-conversion", true, "boolean flag to wait for disk conversion to be 100% complete")
-	fs.Int64Var(&o.DiskOfflineConversionTimeoutInSec, "disk-offline-conversion-timeout-sec", 600, "timeout in seconds for disk offline conversion")
+	fs.Int64Var(&o.DiskOfflineConversionTimeoutInSec, "disk-offline-conversion-timeout-sec", 3600, "timeout in seconds for disk offline conversion")
 	return fs
 }

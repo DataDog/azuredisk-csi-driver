@@ -110,7 +110,7 @@ const (
 )
 
 const (
-	ConversionStartTimeTag = "conversionStartTime"
+	ConversionStartTimeTag = "conversion-start-time"
 )
 
 var (
