@@ -622,7 +622,7 @@ func (d *Driver) waitForDiskConversion(ctx context.Context, disk *armcompute.Dis
 	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
 		klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
 			diskURI, *disk.SKU.Name, skuName, state, completion)
-		return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%)",
+		return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)",
 			diskURI, *disk.SKU.Name, skuName, state, completion)
 	}
 
@@ -636,7 +636,7 @@ func (d *Driver) waitForDiskConversion(ctx context.Context, disk *armcompute.Dis
 		// Keep waiting
 		if !timeOutExceeded {
 			klog.V(1).Infof("Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete.", diskURI, *disk.SKU.Name, completion)
-			return status.Errorf(codes.Unavailable, "Disk %s SKU changed to %s, waiting for full conversion: %.2f%% complete", diskURI, *disk.SKU.Name, completion)
+			return status.Errorf(codes.Unavailable, "Disk %s SKU changed to %s, waiting for full conversion: %.2f%%%% complete", diskURI, *disk.SKU.Name, completion)
 		}
 		// Conversion timed out
 		klog.Errorf("Disk %s full conversion timed out after %v: %.2f%% complete. Proceeding with attachment. Performance of the disk might be degraded", diskURI, d.diskOfflineConversionTimeout, completion)
