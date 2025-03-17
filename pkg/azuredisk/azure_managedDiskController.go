@@ -492,6 +492,10 @@ func (c *ManagedDiskController) ModifyDisk(ctx context.Context, options *Managed
 			model.Tags[azureconsts.SkuNameField] = &targetSKUName
 			model.Tags[azureconsts.ConversionStartTimeTag] = ptr.To(time.Now().Format(time.RFC3339))
 			model.SKU = result.SKU
+			if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
+				return err
+			}
+			return fmt.Errorf("azureDisk - modifying disk(%s) from %s to %s can't be performed online, tagged disk for offline conversion", diskName, sourceSKUName, targetSKUName)
 		}
 		if _, err := diskClient.Patch(ctx, rg, diskName, model); err != nil {
 			return err
