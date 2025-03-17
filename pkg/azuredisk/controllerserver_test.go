@@ -2968,7 +2968,7 @@ func TestWaitForDiskConversion(t *testing.T) {
 			waitForFullDiskConversion:     true,
 			OfflineConversionTimeoutInSec: 100,
 			expectError:                   true,
-			expectedErrorContainsString:   "waiting for full conversion: 50.00% complete",
+			expectedErrorContainsString:   "waiting for full conversion: 50.00%% complete",
 		},
 		{
 			name: "SKU changed but conversion not 100% complete, wait disabled",
