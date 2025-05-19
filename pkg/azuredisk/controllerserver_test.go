@@ -3155,6 +3155,89 @@ func TestGetSourceDiskSize(t *testing.T) {
 	}
 }
 
+func TestWaitForDiskConversion(t *testing.T) {
+	testCases := []struct {
+		name                        string
+		diskProperties              *armcompute.DiskProperties
+		diskTags                    map[string]*string
+		diskSKU                     *armcompute.DiskSKU
+		expectError                 bool
+		expectedErrorContainsString string
+	}{
+		{
+			name: "No SKU change in progress",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(100)),
+			},
+			diskTags: map[string]*string{},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumLRS),
+			},
+			expectError: false,
+		},
+		{
+			name: "SKU change in progress",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Updating"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField: ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumLRS),
+			},
+			expectError:                 true,
+			expectedErrorContainsString: "SKU change from Premium_LRS to PremiumV2_LRS in progress",
+		},
+		{
+			name: "SKU changed",
+			diskProperties: &armcompute.DiskProperties{
+				ProvisioningState: ptr.To("Succeeded"),
+				CompletionPercent: ptr.To(float32(50)),
+			},
+			diskTags: map[string]*string{
+				consts.SkuNameField: ptr.To(string(armcompute.DiskStorageAccountTypesPremiumV2LRS)),
+			},
+			diskSKU: &armcompute.DiskSKU{
+				Name: ptr.To(armcompute.DiskStorageAccountTypesPremiumV2LRS),
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cntl := gomock.NewController(t)
+			defer cntl.Finish()
+			d := getFakeDriverWithKubeClient(cntl)
+
+			disk := &armcompute.Disk{
+				Properties: tc.diskProperties,
+				SKU:        tc.diskSKU,
+				Tags:       tc.diskTags,
+			}
+			diskClient := mock_diskclient.NewMockInterface(cntl)
+			d.getClientFactory().(*mock_azclient.MockClientFactory).EXPECT().GetDiskClientForSub(gomock.Any()).Return(diskClient, nil).AnyTimes()
+			diskClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(disk, nil).AnyTimes()
+
+			err := d.waitForDiskConversion(disk, "test-disk-uri")
+
+			if tc.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if tc.expectedErrorContainsString != "" && !strings.Contains(err.Error(), tc.expectedErrorContainsString) {
+					t.Errorf("Error message doesn't contain expected string.\nExpected: %s\nGot: %s",
+						tc.expectedErrorContainsString, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+		})
+	}
+}
+
 func getFakeDriverWithKubeClient(ctrl *gomock.Controller) FakeDriver {
 	d, _ := NewFakeDriver(ctrl)
 
