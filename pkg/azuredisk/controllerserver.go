@@ -1288,3 +1288,24 @@ func (d *Driver) GetSourceDiskSize(ctx context.Context, subsID, resourceGroup, d
 	}
 	return (*result.Properties).DiskSizeGB, result, nil
 }
+
+func (d *Driver) updateDiskTags(ctx context.Context, diskURI string, tags map[string]*string) {
+	subscriptionID, resourceGroup, diskName, err := azureutils.GetInfoFromURI(diskURI)
+	if err != nil {
+		klog.Warningf("Failed to get info from diskURI: %q, %v", diskURI, err)
+		return
+	}
+
+	diskClient, err := d.clientFactory.GetDiskClientForSub(subscriptionID)
+	if err != nil {
+		klog.Warningf("getDiskClientForSub(%s) failed with %v", subscriptionID, err)
+		return
+	}
+
+	diskUpdate := armcompute.DiskUpdate{
+		Tags: tags,
+	}
+	if _, err = diskClient.Patch(ctx, resourceGroup, diskName, diskUpdate); err != nil {
+		klog.Warningf("update disk(%s) tags under rg(%s) failed with %v", diskName, resourceGroup, err)
+	}
+}
