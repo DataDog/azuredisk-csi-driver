@@ -488,6 +488,10 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		}
 	}
 
+	if err = d.waitForDiskConversion(disk, diskURI); err != nil {
+		return nil, err
+	}
+
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
@@ -1288,4 +1292,51 @@ func (d *Driver) GetSourceDiskSize(ctx context.Context, subsID, resourceGroup, d
 		return nil, result, status.Error(codes.Internal, fmt.Sprintf("DiskSizeGB for disk (%s) in resourcegroup (%s) is nil", diskName, resourceGroup))
 	}
 	return (*result.Properties).DiskSizeGB, result, nil
+}
+
+func (d *Driver) updateDiskTags(ctx context.Context, diskURI string, tags map[string]*string) {
+	subscriptionID, resourceGroup, diskName, err := azureutils.GetInfoFromURI(diskURI)
+	if err != nil {
+		klog.Warningf("Failed to get info from diskURI: %q, %v", diskURI, err)
+		return
+	}
+
+	diskClient, err := d.clientFactory.GetDiskClientForSub(subscriptionID)
+	if err != nil {
+		klog.Warningf("getDiskClientForSub(%s) failed with %v", subscriptionID, err)
+		return
+	}
+
+	diskUpdate := armcompute.DiskUpdate{
+		Tags: tags,
+	}
+	if _, err = diskClient.Patch(ctx, resourceGroup, diskName, diskUpdate); err != nil {
+		klog.Warningf("update disk(%s) tags under rg(%s) failed with %v", diskName, resourceGroup, err)
+	}
+}
+
+// Delay attachment when changing disk SKU, this returns an error if the SKU change is in progress
+func (d *Driver) waitForDiskConversion(disk *armcompute.Disk, diskURI string) error {
+	// no tag indicating a SKU change request
+	tags := disk.Tags
+	if tags == nil {
+		return nil
+	}
+	skuName := ptr.Deref(tags[consts.SkuNameField], "")
+	if skuName == "" {
+		return nil
+	}
+
+	state := ptr.Deref(disk.Properties.ProvisioningState, "")
+	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+
+	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+		klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
+		return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
+	}
+
+	klog.V(1).Infof("Disk %s conversion to %s initiated. Proceeding with attachment.", diskURI, *disk.SKU.Name)
+	return nil
 }
