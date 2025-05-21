@@ -2969,7 +2969,7 @@ func TestWaitForDiskConversion(t *testing.T) {
 			d.getClientFactory().(*mock_azclient.MockClientFactory).EXPECT().GetDiskClientForSub(gomock.Any()).Return(diskClient, nil).AnyTimes()
 			diskClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(disk, nil).AnyTimes()
 
-			err := d.waitForDiskConversion(disk, "test-disk-uri")
+			err := d.waitForSKUChange(disk, "test-disk-uri")
 
 			if tc.expectError {
 				if err == nil {
