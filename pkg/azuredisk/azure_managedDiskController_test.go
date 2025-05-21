@@ -784,6 +784,14 @@ func TestModifyDisk(t *testing.T) {
 			expectedErr:        true,
 			expectedErrMsg:     fmt.Errorf("Patch Disk failed"),
 		},
+		{
+			desc:               "we should tag the disk for premium v2 conversion",
+			diskName:           diskName,
+			storageAccountType: armcompute.DiskStorageAccountTypesPremiumV2LRS,
+			existedDisk:        &armcompute.Disk{Name: ptr.To(diskName), SKU: &armcompute.DiskSKU{Name: &storageAccountTypePremiumLRS}, Properties: &armcompute.DiskProperties{}},
+			expectedErr:        true,
+			expectedErrMsg:     fmt.Errorf("azureDisk - modifying disk(disk1) from Premium_LRS to PremiumV2_LRS can't be performed online, tagged disk for offline conversion"),
+		},
 	}
 
 	for i, test := range testCases {
