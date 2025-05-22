@@ -96,6 +96,7 @@ type FakeDriver interface {
 	setThrottlingCache(key string, value string)
 	getUsedLunsFromVolumeAttachments(context.Context, string) ([]int, error)
 	getUsedLunsFromNode(context.Context, types.NodeName) ([]int, error)
+	waitForSKUChange(disk *armcompute.Disk, s string) error
 }
 
 type fakeDriverV1 struct {
