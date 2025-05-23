@@ -38,11 +38,15 @@ import (
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientset "k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume/util/hostutil"
 	"k8s.io/mount-utils"
@@ -139,6 +143,10 @@ type DriverCore struct {
 	maxConcurrentFormat     int64
 	concurrentFormatTimeout int64
 	enableMinimumRetryAfter bool
+	// PV informer for migration progress tracking
+	pvInformer     cache.SharedIndexInformer
+	pvLister       corelisters.PersistentVolumeLister
+	informerStopCh chan struct{}
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -327,7 +335,217 @@ func newDriverV1(options *DriverOptions) *Driver {
 			removeTaintInBackground(kubeClient, driver.NodeID, driver.Name, taintRemovalBackoff, removeNotReadyTaint)
 		})
 	}
+
+	// Initialize PV informer for migration progress tracking if kubeclient is available
+	if kubeClient != nil {
+		driver.initializePVInformer()
+	}
+
 	return &driver
+}
+
+// initializePVInformer sets up the PV informer for migration progress tracking
+func (d *DriverCore) initializePVInformer() {
+	if d.kubeClient == nil {
+		return
+	}
+
+	// Create informer factory with 30 second resync period
+	informerFactory := informers.NewSharedInformerFactory(d.kubeClient, 30*time.Second)
+	d.pvInformer = informerFactory.Core().V1().PersistentVolumes().Informer()
+	d.pvLister = informerFactory.Core().V1().PersistentVolumes().Lister()
+
+	// Add event handler for migration tracking
+	d.pvInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    d.handlePVMigrationEvent,
+		UpdateFunc: func(oldObj, newObj interface{}) { d.handlePVMigrationEvent(newObj) },
+	})
+
+	d.informerStopCh = make(chan struct{})
+	klog.V(2).Info("PV informer initialized for migration progress tracking")
+}
+
+// handlePVMigrationEvent processes PV events to detect migration annotation changes
+func (d *DriverCore) handlePVMigrationEvent(obj interface{}) {
+	pv, ok := obj.(*corev1.PersistentVolume)
+	if !ok {
+		return
+	}
+
+	// Only care about our CSI driver's PVs
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.Name {
+		return
+	}
+
+	// Check if this PV has migration target annotation
+	if targetSKU, exists := pv.Annotations["disk.csi.azure.com/storageaccounttype"]; exists {
+		progressStatus := pv.Annotations["migration.disk.csi.azure.com/status"]
+		if progressStatus != "completed" {
+			klog.V(4).Infof("Detected migration target for PV %s: %s", pv.Name, targetSKU)
+			// Trigger immediate progress check for this PV
+			go d.updateSinglePVMigrationProgress(pv)
+		}
+	}
+}
+
+// runMigrationProgressUpdater runs periodic migration progress updates
+func (d *DriverCore) runMigrationProgressUpdater() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			d.updateActiveMigrationsFromCache()
+		case <-d.informerStopCh:
+			klog.V(2).Info("Migration progress updater stopped")
+			return
+		}
+	}
+}
+
+// updateActiveMigrationsFromCache checks all PVs from cache for active migrations
+func (d *DriverCore) updateActiveMigrationsFromCache() {
+	if d.pvLister == nil {
+		return
+	}
+
+	// Get all PVs from cache (no API call!)
+	pvs, err := d.pvLister.List(labels.Everything())
+	if err != nil {
+		klog.Warningf("Failed to list PVs from cache: %v", err)
+		return
+	}
+
+	var activeMigrations int
+	for _, pv := range pvs {
+		if d.isPVMigrationActive(pv) {
+			activeMigrations++
+			go d.updateSinglePVMigrationProgress(pv) // Parallel updates
+		}
+	}
+
+	if activeMigrations > 0 {
+		klog.V(6).Infof("Found %d active migrations", activeMigrations)
+	}
+}
+
+// isPVMigrationActive checks if a PV has an active migration
+func (d *DriverCore) isPVMigrationActive(pv *corev1.PersistentVolume) bool {
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.Name {
+		return false
+	}
+
+	_, hasMigrationTarget := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
+	progressStatus := pv.Annotations["migration.disk.csi.azure.com/status"]
+
+	return hasMigrationTarget && progressStatus != "completed"
+}
+
+// updateSinglePVMigrationProgress updates migration progress for a single PV
+func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume) {
+	diskURI := pv.Spec.CSI.VolumeHandle
+	targetSKU := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
+
+	// Skip if diskController is not available (e.g., in tests)
+	if d.diskController == nil {
+		klog.V(6).Info("diskController not available, skipping migration progress update")
+		return
+	}
+
+	// Get current disk state from Azure
+	disk, err := d.diskController.GetDiskByURI(context.TODO(), diskURI)
+	if err != nil {
+		klog.Warningf("Failed to check disk %s: %v", diskURI, err)
+		return
+	}
+
+	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+	currentSKU := string(*disk.SKU.Name)
+
+	// Determine migration status
+	status := d.getMigrationStatus(currentSKU, targetSKU, completion)
+
+	// Update progress
+	if err := d.updatePVMigrationProgress(diskURI, completion, status); err != nil {
+		klog.Warningf("Failed to update migration progress for PV %s: %v", pv.Name, err)
+	}
+}
+
+// getMigrationStatus determines the current migration status
+func (d *DriverCore) getMigrationStatus(currentSKU, targetSKU string, completion float32) string {
+	if strings.EqualFold(currentSKU, targetSKU) && completion >= 100.0 {
+		return "completed"
+	}
+	return "converting"
+}
+
+// updatePVMigrationProgress updates the PV annotations with migration progress
+func (d *DriverCore) updatePVMigrationProgress(diskURI string, completion float32, status string) error {
+	if d.kubeClient == nil {
+		return fmt.Errorf("kubeclient not available")
+	}
+
+	// Find PV by diskURI using the lister first (cache), fallback to API call
+	var targetPV *corev1.PersistentVolume
+	if d.pvLister != nil {
+		pvs, err := d.pvLister.List(labels.Everything())
+		if err == nil {
+			for _, pv := range pvs {
+				if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == d.Name && pv.Spec.CSI.VolumeHandle == diskURI {
+					targetPV = pv
+					break
+				}
+			}
+		}
+	}
+
+	// Fallback to API call if not found in cache
+	if targetPV == nil {
+		pvList, err := d.kubeClient.CoreV1().PersistentVolumes().List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to list PVs: %w", err)
+		}
+
+		for _, pv := range pvList.Items {
+			if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == d.Name && pv.Spec.CSI.VolumeHandle == diskURI {
+				targetPV = &pv
+				break
+			}
+		}
+	}
+
+	if targetPV == nil {
+		return fmt.Errorf("PV not found for disk %s", diskURI)
+	}
+
+	// Create a copy to avoid modifying the cached object
+	pvCopy := targetPV.DeepCopy()
+
+	// Create annotations if they don't exist
+	if pvCopy.Annotations == nil {
+		pvCopy.Annotations = make(map[string]string)
+	}
+
+	// Update migration progress annotations
+	pvCopy.Annotations["migration.disk.csi.azure.com/progress"] = fmt.Sprintf("%.1f", completion)
+	pvCopy.Annotations["migration.disk.csi.azure.com/status"] = status
+	pvCopy.Annotations["migration.disk.csi.azure.com/updated"] = time.Now().Format(time.RFC3339)
+
+	// If migration is completed, clean up the trigger annotation
+	if status == "completed" {
+		pvCopy.Annotations["migration.disk.csi.azure.com/completed"] = time.Now().Format(time.RFC3339)
+		delete(pvCopy.Annotations, "disk.csi.azure.com/storageaccounttype")
+		klog.V(2).Infof("Migration completed for PV %s, disk %s", pvCopy.Name, diskURI)
+	}
+
+	_, err := d.kubeClient.CoreV1().PersistentVolumes().Update(context.TODO(), pvCopy, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update PV %s: %w", pvCopy.Name, err)
+	}
+
+	klog.V(6).Infof("Updated migration progress for PV %s: %.1f%% (%s)", pvCopy.Name, completion, status)
+	return nil
 }
 
 // Run driver initialization
@@ -337,6 +555,24 @@ func (d *Driver) Run(ctx context.Context) error {
 		klog.Fatalf("%v", err)
 	}
 	klog.Infof("\nDRIVER INFORMATION:\n-------------------\n%s\n\nStreaming logs below:", versionMeta)
+
+	// Start informer if available
+	if d.pvInformer != nil {
+		go d.pvInformer.Run(d.informerStopCh)
+		if !cache.WaitForCacheSync(d.informerStopCh, d.pvInformer.HasSynced) {
+			klog.Warning("Failed to sync PV informer cache")
+		} else {
+			klog.V(2).Info("PV informer cache synced, starting migration progress updater")
+			go d.runMigrationProgressUpdater()
+		}
+	}
+
+	// Ensure informer is stopped on shutdown
+	defer func() {
+		if d.informerStopCh != nil {
+			close(d.informerStopCh)
+		}
+	}()
 
 	opts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(

@@ -1311,6 +1311,11 @@ func (d *Driver) waitForSKUChange(disk *armcompute.Disk, diskURI string) error {
 	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
 
 	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+		// Update PV migration progress during attachment blocking
+		if err := d.updatePVMigrationProgress(diskURI, completion, "converting"); err != nil {
+			klog.Warningf("Failed to update PV migration progress: %v", err)
+		}
+
 		message := fmt.Sprintf("Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)\n", diskURI, *disk.SKU.Name, skuName, state, completion)
 		klog.V(1).Info(message)
 		return status.Error(codes.Unavailable, message)
