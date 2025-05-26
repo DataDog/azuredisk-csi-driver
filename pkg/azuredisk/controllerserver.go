@@ -33,6 +33,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 	volerr "k8s.io/cloud-provider/volume/errors"
@@ -1311,6 +1312,22 @@ func (d *Driver) waitForSKUChange(disk *armcompute.Disk, diskURI string) error {
 	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
 
 	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
+		// Update PV migration progress during attachment blocking
+		// Find PV and update migration progress during attachment blocking
+		if d.pvLister != nil {
+			pvs, err := d.pvLister.List(labels.Everything())
+			if err == nil {
+				for _, pv := range pvs {
+					if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == d.Name && pv.Spec.CSI.VolumeHandle == diskURI {
+						if err := d.updatePVMigrationProgress(pv, "converting"); err != nil {
+							klog.Warningf("Failed to update PV migration progress: %v", err)
+						}
+						break
+					}
+				}
+			}
+		}
+
 		message := fmt.Sprintf("Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)\n", diskURI, *disk.SKU.Name, skuName, state, completion)
 		klog.V(1).Info(message)
 		return status.Error(codes.Unavailable, message)
