@@ -22,6 +22,7 @@ package azuredisk
 import (
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"go.uber.org/mock/gomock"
 	"k8s.io/client-go/kubernetes/fake"
@@ -114,4 +115,8 @@ func (d *fakeDriverV2) getClientFactory() azclient.ClientFactory {
 }
 
 func (d *DriverV2) setThrottlingCache(key string, value string) {
+}
+
+func (d *fakeDriverV2) waitForSKUChange(disk *armcompute.Disk, diskURI string) error {
+	return nil
 }
