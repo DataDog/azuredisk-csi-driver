@@ -38,11 +38,13 @@ import (
 	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/labels"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume/util/hostutil"
 	"k8s.io/mount-utils"
@@ -133,12 +135,17 @@ type DriverCore struct {
 	endpoint                     string
 	disableAVSetNodes            bool
 	removeNotReadyTaint          bool
-	kubeClient                   kubernetes.Interface
+	kubeClient                   clientset.Interface
 	// a timed cache storing volume stats <volumeID, volumeStats>
-	volStatsCache           azcache.Resource
-	maxConcurrentFormat     int64
-	concurrentFormatTimeout int64
-	enableMinimumRetryAfter bool
+	volStatsCache             azcache.Resource
+	maxConcurrentFormat       int64
+	concurrentFormatTimeout   int64
+	enableMinimumRetryAfter   bool
+	enablePVMigrationTracking bool
+	// PV informer for migration progress tracking
+	pvInformer     cache.SharedIndexInformer
+	pvLister       corelisters.PersistentVolumeLister
+	informerStopCh chan struct{}
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -320,6 +327,9 @@ func newDriverV1(options *DriverOptions) *Driver {
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 	})
 
+	// Set migration tracking flag from options
+	driver.enablePVMigrationTracking = options.EnablePVMigrationTracking
+
 	if kubeClient != nil && driver.removeNotReadyTaint && driver.NodeID != "" {
 		// Remove taint from node to indicate driver startup success
 		// This is done at the last possible moment to prevent race conditions or false positive removals
@@ -327,7 +337,151 @@ func newDriverV1(options *DriverOptions) *Driver {
 			removeTaintInBackground(kubeClient, driver.NodeID, driver.Name, taintRemovalBackoff, removeNotReadyTaint)
 		})
 	}
+
+	// PV informer will be initialized in Run() method when driver actually starts
+
 	return &driver
+}
+
+func (d *DriverCore) initializePVInformer() {
+	if d.kubeClient == nil {
+		return
+	}
+
+	informerFactory := informers.NewSharedInformerFactory(d.kubeClient, 30*time.Second)
+	d.pvInformer = informerFactory.Core().V1().PersistentVolumes().Informer()
+	d.pvLister = informerFactory.Core().V1().PersistentVolumes().Lister()
+
+	_, err := d.pvInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(_, newObj interface{}) { d.handlePVMigrationEvent(newObj) },
+	})
+	if err != nil {
+		klog.Errorf("Failed to add event handler to PV informer: %v", err)
+	}
+
+	d.informerStopCh = make(chan struct{})
+
+	klog.V(2).Info("PV informer initialized for migration progress tracking")
+}
+
+func (d *DriverCore) handlePVMigrationEvent(obj interface{}) {
+	pv, ok := obj.(*corev1.PersistentVolume)
+	if !ok || pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.Name {
+		return
+	}
+
+	if _, exists := pv.Annotations["disk.csi.azure.com/storageaccounttype"]; exists {
+		if pv.Annotations["migration.disk.csi.azure.com/status"] != "completed" {
+			// Process migration progress update directly
+			go d.updateSinglePVMigrationProgress(pv)
+		}
+	}
+}
+
+// runMigrationProgressUpdater periodically checks for migration completion
+func (d *DriverCore) runMigrationProgressUpdater() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			d.checkActiveMigrations()
+		case <-d.informerStopCh:
+			klog.V(2).Info("Migration progress updater stopped")
+			return
+		}
+	}
+}
+
+// checkActiveMigrations checks PVs with active migrations
+func (d *DriverCore) checkActiveMigrations() {
+	if d.pvLister == nil {
+		return
+	}
+
+	pvs, err := d.pvLister.List(labels.Everything())
+	if err != nil {
+		klog.Warningf("Failed to list PVs: %v", err)
+		return
+	}
+
+	for _, pv := range pvs {
+		if d.isPVMigrationActive(pv) {
+			go d.updateSinglePVMigrationProgress(pv)
+		}
+	}
+}
+
+// isPVMigrationActive checks if a PV has an active migration
+func (d *DriverCore) isPVMigrationActive(pv *corev1.PersistentVolume) bool {
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.Name {
+		return false
+	}
+
+	_, hasMigrationTarget := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
+	progressStatus := pv.Annotations["migration.disk.csi.azure.com/status"]
+
+	return hasMigrationTarget && progressStatus != "completed"
+}
+
+func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume) {
+	if d.diskController == nil {
+		return
+	}
+
+	diskURI := pv.Spec.CSI.VolumeHandle
+	targetSKU := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	disk, err := d.diskController.GetDiskByURI(ctx, diskURI)
+	if err != nil {
+		klog.Warningf("Failed to check disk %s: %v", diskURI, err)
+		return
+	}
+
+	if disk.SKU == nil || disk.SKU.Name == nil {
+		klog.Warningf("Invalid disk SKU for %s", diskURI)
+		return
+	}
+
+	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
+	currentSKU := string(*disk.SKU.Name)
+	status := "converting"
+	if strings.EqualFold(currentSKU, targetSKU) && completion >= 100.0 {
+		status = "completed"
+	}
+
+	if err := d.updatePVMigrationProgress(pv, status); err != nil {
+		klog.Warningf("Failed to update migration progress for PV %s: %v", pv.Name, err)
+	}
+}
+
+func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, status string) error {
+	if d.kubeClient == nil {
+		return fmt.Errorf("kubeclient not available")
+	}
+
+	pvCopy := pv.DeepCopy()
+	if pvCopy.Annotations == nil {
+		pvCopy.Annotations = make(map[string]string)
+	}
+
+	pvCopy.Annotations["migration.disk.csi.azure.com/status"] = status
+
+	if status == "completed" {
+		delete(pvCopy.Annotations, "disk.csi.azure.com/storageaccounttype")
+		klog.V(2).Infof("Migration completed for PV %s", pvCopy.Name)
+	}
+
+	_, err := d.kubeClient.CoreV1().PersistentVolumes().Update(context.TODO(), pvCopy, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update PV %s: %w", pvCopy.Name, err)
+	}
+
+	return nil
 }
 
 // Run driver initialization
@@ -337,6 +491,27 @@ func (d *Driver) Run(ctx context.Context) error {
 		klog.Fatalf("%v", err)
 	}
 	klog.Infof("\nDRIVER INFORMATION:\n-------------------\n%s\n\nStreaming logs below:", versionMeta)
+
+	// Initialize and start PV informer for migration tracking if enabled (controller mode only)
+	if d.kubeClient != nil && d.enablePVMigrationTracking && d.NodeID == "" {
+		d.initializePVInformer()
+		if d.pvInformer != nil {
+			go d.pvInformer.Run(d.informerStopCh)
+			if !cache.WaitForCacheSync(d.informerStopCh, d.pvInformer.HasSynced) {
+				klog.Warning("Failed to sync PV informer cache")
+			} else {
+				klog.V(2).Info("PV informer cache synced, starting migration progress updater")
+				go d.runMigrationProgressUpdater()
+			}
+		}
+	}
+
+	// Ensure informer is stopped on shutdown
+	defer func() {
+		if d.informerStopCh != nil {
+			close(d.informerStopCh)
+		}
+	}()
 
 	opts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
@@ -590,7 +765,7 @@ func (d *DriverCore) getUsedLunsFromVolumeAttachments(ctx context.Context, nodeN
 }
 
 // getUsedLunsFromNode returns a list of sorted used luns from Node
-func (d *DriverCore) getUsedLunsFromNode(ctx context.Context, nodeName types.NodeName) ([]int, error) {
+func (d *DriverCore) getUsedLunsFromNode(ctx context.Context, nodeName k8stypes.NodeName) ([]int, error) {
 	disks, _, err := d.diskController.GetNodeDataDisks(ctx, nodeName, azcache.CacheReadTypeDefault)
 	if err != nil {
 		klog.Errorf("error of getting data disks for node %s: %v", nodeName, err)
@@ -680,7 +855,7 @@ type JSONPatch struct {
 }
 
 // removeTaintInBackground is a goroutine that retries removeNotReadyTaint with exponential backoff
-func removeTaintInBackground(k8sClient kubernetes.Interface, nodeName, driverName string, backoff wait.Backoff, removalFunc func(kubernetes.Interface, string, string) error) {
+func removeTaintInBackground(k8sClient clientset.Interface, nodeName, driverName string, backoff wait.Backoff, removalFunc func(clientset.Interface, string, string) error) {
 	backoffErr := wait.ExponentialBackoff(backoff, func() (bool, error) {
 		err := removalFunc(k8sClient, nodeName, driverName)
 		if err != nil {
@@ -698,7 +873,7 @@ func removeTaintInBackground(k8sClient kubernetes.Interface, nodeName, driverNam
 // removeNotReadyTaint removes the taint disk.csi.azure.com/agent-not-ready from the local node
 // This taint can be optionally applied by users to prevent startup race conditions such as
 // https://github.com/kubernetes/kubernetes/issues/95911
-func removeNotReadyTaint(clientset kubernetes.Interface, nodeName, driverName string) error {
+func removeNotReadyTaint(clientset clientset.Interface, nodeName, driverName string) error {
 	ctx := context.Background()
 	node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
@@ -752,7 +927,7 @@ func removeNotReadyTaint(clientset kubernetes.Interface, nodeName, driverName st
 	return nil
 }
 
-func checkAllocatable(ctx context.Context, clientset kubernetes.Interface, nodeName, driverName string) error {
+func checkAllocatable(ctx context.Context, clientset clientset.Interface, nodeName, driverName string) error {
 	csiNode, err := clientset.StorageV1().CSINodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("isAllocatableSet: failed to get CSINode for %s: %w", nodeName, err)
