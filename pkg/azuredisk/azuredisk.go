@@ -74,6 +74,13 @@ var (
 	}
 )
 
+type MigrationStatus string
+
+const (
+	Converting MigrationStatus = "converting"
+	Completed  MigrationStatus = "completed"
+)
+
 // CSIDriver defines the interface for a CSI driver.
 type CSIDriver interface {
 	csi.ControllerServer
@@ -144,11 +151,13 @@ type DriverCore struct {
 	enableMinimumRetryAfter   bool
 	enablePVMigrationTracking bool
 	// PV informer for migration progress tracking
-	pvInformer     cache.SharedIndexInformer
-	pvLister       corelisters.PersistentVolumeLister
-	informerStopCh chan struct{}
+	pvInformer       cache.SharedIndexInformer
+	pvLister         corelisters.PersistentVolumeLister
+	pvInformerStopCh chan struct{}
 	// Migration progress tracking deduplication
-	migrationInProgress sync.Map // map[string]bool for PV names currently being processed
+	migrationInProgress          sync.Map // map[string]bool for PV names currently being processed
+	targetSKUAnnotationKey       string
+	migrationStatusAnnotationKey string
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
@@ -332,6 +341,7 @@ func newDriverV1(options *DriverOptions) *Driver {
 
 	// Set migration tracking flag from options
 	driver.enablePVMigrationTracking = options.EnablePVMigrationTracking
+	driver.setupMigrationAnnotationKeys()
 
 	if kubeClient != nil && driver.removeNotReadyTaint && driver.NodeID != "" {
 		// Remove taint from node to indicate driver startup success
@@ -344,6 +354,11 @@ func newDriverV1(options *DriverOptions) *Driver {
 	// PV informer will be initialized in Run() method when driver actually starts
 
 	return &driver
+}
+
+func (d *DriverCore) setupMigrationAnnotationKeys() {
+	d.targetSKUAnnotationKey = fmt.Sprintf("%s/%s", d.Name, consts.StorageAccountTypeField)
+	d.migrationStatusAnnotationKey = fmt.Sprintf("migration.%s/status", d.Name)
 }
 
 func (d *DriverCore) initializePVInformer() {
@@ -362,22 +377,16 @@ func (d *DriverCore) initializePVInformer() {
 		klog.Errorf("Failed to add event handler to PV informer: %v", err)
 	}
 
-	d.informerStopCh = make(chan struct{})
+	d.pvInformerStopCh = make(chan struct{})
 
 	klog.V(2).Info("PV informer initialized for migration progress tracking")
 }
 
 func (d *DriverCore) handlePVMigrationEvent(obj interface{}) {
 	pv, ok := obj.(*corev1.PersistentVolume)
-	if !ok || pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.Name {
-		return
-	}
-
-	if _, exists := pv.Annotations["disk.csi.azure.com/storageaccounttype"]; exists {
-		if pv.Annotations["migration.disk.csi.azure.com/status"] != "completed" {
-			// Process migration progress update directly
-			go d.updateSinglePVMigrationProgress(pv)
-		}
+	if ok && d.isPVMigrationActive(pv) {
+		// Process migration progress update directly
+		go d.updateSinglePVMigrationProgress(pv)
 	}
 }
 
@@ -390,7 +399,7 @@ func (d *DriverCore) runMigrationProgressUpdater() {
 		select {
 		case <-ticker.C:
 			d.checkActiveMigrations()
-		case <-d.informerStopCh:
+		case <-d.pvInformerStopCh:
 			klog.V(2).Info("Migration progress updater stopped")
 			return
 		}
@@ -422,10 +431,10 @@ func (d *DriverCore) isPVMigrationActive(pv *corev1.PersistentVolume) bool {
 		return false
 	}
 
-	_, hasMigrationTarget := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
-	progressStatus := pv.Annotations["migration.disk.csi.azure.com/status"]
+	_, hasMigrationTarget := pv.Annotations[d.targetSKUAnnotationKey]
+	progressStatus := MigrationStatus(pv.Annotations[d.migrationStatusAnnotationKey])
 
-	return hasMigrationTarget && progressStatus != "completed"
+	return hasMigrationTarget && progressStatus != Completed
 }
 
 func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume) {
@@ -442,7 +451,7 @@ func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume
 	defer d.migrationInProgress.Delete(pvName)
 
 	diskURI := pv.Spec.CSI.VolumeHandle
-	targetSKU := pv.Annotations["disk.csi.azure.com/storageaccounttype"]
+	targetSKU := pv.Annotations[d.targetSKUAnnotationKey]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -460,9 +469,9 @@ func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume
 
 	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
 	currentSKU := string(*disk.SKU.Name)
-	status := "converting"
+	status := Converting
 	if strings.EqualFold(currentSKU, targetSKU) && completion >= 100.0 {
-		status = "completed"
+		status = Completed
 	}
 
 	if err := d.updatePVMigrationProgress(pv, status); err != nil {
@@ -470,7 +479,7 @@ func (d *DriverCore) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume
 	}
 }
 
-func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, status string) error {
+func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, status MigrationStatus) error {
 	if d.kubeClient == nil {
 		return fmt.Errorf("kubeclient not available")
 	}
@@ -480,9 +489,9 @@ func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, stat
 		pvCopy.Annotations = make(map[string]string)
 	}
 
-	pvCopy.Annotations["migration.disk.csi.azure.com/status"] = status
+	pvCopy.Annotations[d.migrationStatusAnnotationKey] = string(status)
 
-	if status == "completed" {
+	if status == Completed {
 		klog.V(2).Infof("Migration completed for PV %s", pvCopy.Name)
 	}
 
@@ -506,8 +515,8 @@ func (d *Driver) Run(ctx context.Context) error {
 	if d.kubeClient != nil && d.enablePVMigrationTracking && d.NodeID == "" {
 		d.initializePVInformer()
 		if d.pvInformer != nil {
-			go d.pvInformer.Run(d.informerStopCh)
-			if !cache.WaitForCacheSync(d.informerStopCh, d.pvInformer.HasSynced) {
+			go d.pvInformer.Run(d.pvInformerStopCh)
+			if !cache.WaitForCacheSync(d.pvInformerStopCh, d.pvInformer.HasSynced) {
 				klog.Warning("Failed to sync PV informer cache")
 			} else {
 				klog.V(2).Info("PV informer cache synced, starting migration progress updater")
@@ -518,8 +527,8 @@ func (d *Driver) Run(ctx context.Context) error {
 
 	// Ensure informer is stopped on shutdown
 	defer func() {
-		if d.informerStopCh != nil {
-			close(d.informerStopCh)
+		if d.pvInformerStopCh != nil {
+			close(d.pvInformerStopCh)
 		}
 	}()
 
