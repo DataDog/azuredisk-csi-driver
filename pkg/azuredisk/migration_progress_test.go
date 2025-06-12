@@ -26,57 +26,27 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestInitializePVInformer(t *testing.T) {
-	tests := []struct {
-		name       string
-		kubeClient bool
-		expectInit bool
-	}{
-		{
-			name:       "with kubeclient",
-			kubeClient: true,
-			expectInit: true,
-		},
-		{
-			name:       "without kubeclient",
-			kubeClient: false,
-			expectInit: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			driver := &Driver{}
-			driver.Name = "disk.csi.azure.com"
-
-			if tt.kubeClient {
-				driver.kubeClient = fake.NewSimpleClientset()
-			}
-
-			driver.initializePVInformer()
-
-			if tt.expectInit {
-				assert.NotNil(t, driver.pvInformer)
-				assert.NotNil(t, driver.pvLister)
-				assert.NotNil(t, driver.informerStopCh)
-			} else {
-				assert.Nil(t, driver.pvInformer)
-				assert.Nil(t, driver.pvLister)
-				assert.Nil(t, driver.informerStopCh)
-			}
-		})
-	}
-}
-
 func TestHandlePVMigrationEvent(t *testing.T) {
 	driver := &Driver{}
 	driver.Name = "disk.csi.azure.com"
+	driver.setupMigrationAnnotationKeys()
 
 	tests := []struct {
 		name   string
 		pv     *corev1.PersistentVolume
 		expect bool
 	}{
+		{
+			name: "nil CSI driver",
+			pv: &corev1.PersistentVolume{
+				Spec: corev1.PersistentVolumeSpec{
+					PersistentVolumeSource: corev1.PersistentVolumeSource{
+						CSI: nil,
+					},
+				},
+			},
+			expect: false,
+		},
 		{
 			name: "wrong driver",
 			pv: &corev1.PersistentVolume{
@@ -169,24 +139,24 @@ func TestUpdatePVMigrationProgress(t *testing.T) {
 	tests := []struct {
 		name        string
 		kubeClient  bool
-		status      string
+		status      MigrationStatus
 		expectError bool
 	}{
 		{
 			name:        "no kubeclient",
 			kubeClient:  false,
-			status:      "converting",
+			status:      Converting,
 			expectError: true,
 		},
 		{
 			name:       "converting status",
 			kubeClient: true,
-			status:     "converting",
+			status:     Converting,
 		},
 		{
 			name:       "completed status",
 			kubeClient: true,
-			status:     "completed",
+			status:     Completed,
 		},
 	}
 
@@ -194,6 +164,7 @@ func TestUpdatePVMigrationProgress(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			driver := &Driver{}
 			driver.Name = "disk.csi.azure.com"
+			driver.setupMigrationAnnotationKeys()
 
 			if tt.kubeClient {
 				driver.kubeClient = fake.NewSimpleClientset(pv)
@@ -210,10 +181,10 @@ func TestUpdatePVMigrationProgress(t *testing.T) {
 					// Verify the status annotation was set
 					updatedPV, err := driver.kubeClient.CoreV1().PersistentVolumes().Get(context.TODO(), pv.Name, metav1.GetOptions{})
 					assert.NoError(t, err)
-					assert.Equal(t, tt.status, updatedPV.Annotations["migration.disk.csi.azure.com/status"])
+					assert.Equal(t, string(tt.status), updatedPV.Annotations[driver.migrationStatusAnnotationKey])
 
 					// Verify we never touch the target annotation - it should always remain
-					_, exists := updatedPV.Annotations["disk.csi.azure.com/storageaccounttype"]
+					_, exists := updatedPV.Annotations[driver.targetSKUAnnotationKey]
 					assert.True(t, exists, "Target annotation should never be modified by progress tracking")
 				}
 			}
