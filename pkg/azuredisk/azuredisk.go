@@ -384,6 +384,7 @@ func (d *DriverCore) initializePVInformer() {
 }
 
 func (d *DriverCore) handlePVMigrationEvent(obj interface{}) {
+	klog.V(2).Info("handling migration event")
 	pv, ok := obj.(*corev1.PersistentVolume)
 	if ok && d.isPVMigrationActive(pv) {
 		// Process migration progress update directly
@@ -393,6 +394,7 @@ func (d *DriverCore) handlePVMigrationEvent(obj interface{}) {
 
 // runMigrationProgressUpdater periodically checks for migration completion
 func (d *DriverCore) runMigrationProgressUpdater() {
+	klog.V(2).Info("Migration progress updater started")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -409,6 +411,7 @@ func (d *DriverCore) runMigrationProgressUpdater() {
 
 // checkActiveMigrations checks PVs with active migrations
 func (d *DriverCore) checkActiveMigrations() {
+	klog.V(2).Info("Checking active migrations")
 	if d.pvLister == nil {
 		return
 	}
@@ -488,6 +491,8 @@ func escapeJSONPointer(s string) string {
 }
 
 func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, status MigrationStatus) error {
+	klog.V(2).Infof("Updating migration progress for PV %s", pv.Name)
+
 	if d.kubeClient == nil {
 		return fmt.Errorf("kubeclient not available")
 	}
@@ -501,7 +506,7 @@ func (d *DriverCore) updatePVMigrationProgress(pv *corev1.PersistentVolume, stat
 	}
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		return fmt.Errorf("failed to marshal patch: %w", err)
+		return fmt.Errorf("failed to marshal patch: %w for PV %s", err, pv.Name)
 	}
 
 	if status == Completed {
