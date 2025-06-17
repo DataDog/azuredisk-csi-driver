@@ -363,6 +363,7 @@ func (d *DriverCore) setupMigrationAnnotationKeys() {
 }
 
 func (d *DriverCore) initializePVInformer() {
+	klog.V(2).Info("initializing PV Informer")
 	if d.kubeClient == nil {
 		return
 	}
@@ -537,6 +538,7 @@ func (d *Driver) Run(ctx context.Context) error {
 	klog.Infof("\nDRIVER INFORMATION:\n-------------------\n%s\n\nStreaming logs below:", versionMeta)
 
 	// Initialize and start PV informer for migration tracking if enabled (controller mode only)
+	klog.V(2).Infof("Checking if we can start informer (kubeclient nil=%t, migration tracking enabled=%t, node id=%s)", d.kubeClient != nil, d.enablePVMigrationTracking, d.NodeID)
 	if d.kubeClient != nil && d.enablePVMigrationTracking && d.NodeID == "" {
 		d.initializePVInformer()
 		if d.pvInformer != nil {
