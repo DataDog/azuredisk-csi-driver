@@ -14,9 +14,3 @@ test:
 
 build-docker-image:
   extends: .build-docker-image
-
-build-nydus-image:
-  needs: ["build-docker-image"]
-  variables:
-    IMAGE_SUFFIX: ""
-  extends: .build-nydus-image
