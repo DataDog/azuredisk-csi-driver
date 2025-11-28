@@ -520,44 +520,25 @@ func (d *Driver) updateSinglePVMigrationProgress(pv *corev1.PersistentVolume) {
 	}
 }
 
-// Helper for JSON Pointer escaping (RFC 6901)
-func escapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~", "~0")
-	s = strings.ReplaceAll(s, "/", "~1")
-	return s
-}
-
 func (d *Driver) updatePVMigrationProgress(pv *corev1.PersistentVolume, status MigrationStatus) error {
 	if d.kubeClient == nil {
 		return fmt.Errorf("kubeclient not available")
 	}
 
-	patch := []map[string]interface{}{
-		{
-			"op":    "add",
-			"path":  fmt.Sprintf("/metadata/annotations/%s", escapeJSONPointer(d.migrationStatusAnnotationKey)),
-			"value": string(status),
-		},
+	pvCopy := pv.DeepCopy()
+	if pvCopy.Annotations == nil {
+		pvCopy.Annotations = make(map[string]string)
 	}
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		return fmt.Errorf("failed to marshal patch: %w", err)
-	}
+
+	pvCopy.Annotations[d.migrationStatusAnnotationKey] = string(status)
 
 	if status == Completed {
-		klog.V(2).Infof("Migration completed for PV %s", pv.Name)
+		klog.V(2).Infof("Migration completed for PV %s", pvCopy.Name)
 	}
 
-	_, err = d.kubeClient.CoreV1().PersistentVolumes().Patch(
-		context.TODO(),
-		pv.Name,
-		types.JSONPatchType,
-		patchBytes,
-		metav1.PatchOptions{},
-	)
-
+	_, err := d.kubeClient.CoreV1().PersistentVolumes().Update(context.TODO(), pvCopy, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to update PV %s: %w", pv.Name, err)
+		return fmt.Errorf("failed to update PV %s: %w", pvCopy.Name, err)
 	}
 
 	return nil
