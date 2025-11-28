@@ -616,7 +616,7 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		}
 	}
 
-	if err = d.waitForSKUChange(disk, diskURI); err != nil {
+	if err = d.waitForDiskConversion(disk, diskURI); err != nil {
 		return nil, err
 	}
 
@@ -1445,9 +1445,8 @@ func (d *Driver) GetSourceDiskSize(ctx context.Context, subsID, resourceGroup, d
 	return (*result.Properties).DiskSizeGB, result, nil
 }
 
-// When migrating from premium v1 to premium v2 we need to initiate the SKU change when the disk is in detached state.
-// This aims to refuse disk attachment until the SKU change requested materialized in the tag has been issued.
-func (d *Driver) waitForSKUChange(disk *armcompute.Disk, diskURI string) error {
+// Delay attachment when changing disk SKU, this returns an error if the SKU change is in progress
+func (d *Driver) waitForDiskConversion(disk *armcompute.Disk, diskURI string) error {
 	// no tag indicating a SKU change request
 	tags := disk.Tags
 	if tags == nil {
@@ -1462,9 +1461,10 @@ func (d *Driver) waitForSKUChange(disk *armcompute.Disk, diskURI string) error {
 	completion := ptr.Deref(disk.Properties.CompletionPercent, 0)
 
 	if armcompute.DiskStorageAccountTypes(skuName) != *disk.SKU.Name {
-		message := fmt.Sprintf("Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)\n", diskURI, *disk.SKU.Name, skuName, state, completion)
-		klog.V(1).Info(message)
-		return status.Error(codes.Unavailable, message)
+		klog.V(1).Infof("Disk %s SKU change from %s to %s in progress: %s (%.2f%%).",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
+		return status.Errorf(codes.Unavailable, "Disk %s SKU change from %s to %s in progress: %s (%.2f%%%%)",
+			diskURI, *disk.SKU.Name, skuName, state, completion)
 	}
 
 	klog.V(1).Infof("Disk %s conversion to %s initiated. Proceeding with attachment.", diskURI, *disk.SKU.Name)
