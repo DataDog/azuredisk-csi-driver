@@ -1,0 +1,32 @@
+name: Python Lockfile Validation
+on:
+    pull_request: {}
+    push: {}
+jobs:
+    validate-lockfile:
+        name: Validate Python Lockfile
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v5
+
+            - name: Validate lockfile is up to date
+              run: |
+                  uv pip compile --python-platform linux --generate-hashes hack/requirements.in -o hack/requirements.txt.tmp
+                  # Compare files, ignoring the header comment line that contains the output filename
+                  tail -n +3 hack/requirements.txt > hack/requirements.txt.body
+                  tail -n +3 hack/requirements.txt.tmp > hack/requirements.txt.tmp.body
+                  if ! diff -q hack/requirements.txt.body hack/requirements.txt.tmp.body > /dev/null 2>&1; then
+                      echo "ERROR: Python lockfile is out of date!"
+                      echo ""
+                      echo "Run 'make update-deps' locally and commit the changes."
+                      echo ""
+                      echo "Diff:"
+                      diff hack/requirements.txt.body hack/requirements.txt.tmp.body || true
+                      rm -f hack/requirements.txt.tmp hack/requirements.txt.body hack/requirements.txt.tmp.body
+                      exit 1
+                  fi
+                  echo "Lockfile is up to date."
+                  rm -f hack/requirements.txt.tmp hack/requirements.txt.body hack/requirements.txt.tmp.body
