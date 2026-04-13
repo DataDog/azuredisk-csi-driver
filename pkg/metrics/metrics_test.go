@@ -105,6 +105,31 @@ func TestCSIMetricContext_Observe(t *testing.T) {
 	}
 }
 
+func TestCSIMetricContext_ObserveWithNodeLabel(t *testing.T) {
+	operationsTotal.Reset()
+
+	NewCSIMetricContext("controller_publish_volume").WithNodeLabel("node-1").Observe(true)
+
+	families, err := legacyregistry.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != "azuredisk_csi_driver_operations_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == NodeLabel && label.GetValue() == "node-1" {
+					return
+				}
+			}
+		}
+	}
+	t.Errorf("expected operation counter with %s=node-1", NodeLabel)
+}
+
 func TestCSIMetricContext_ObserveWithFailure(t *testing.T) {
 	// Reset metrics before test
 	operationsTotal.Reset()
@@ -455,8 +480,8 @@ func BenchmarkMetricsRecordingOnly(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		// Directly record metrics without duration calculation
-		operationDuration.WithLabelValues("benchmark_test", "true").Observe(0.001) // Fixed small duration
-		operationsTotal.WithLabelValues("benchmark_test", "true").Inc()
+		operationDuration.WithLabelValues("benchmark_test", "true", "").Observe(0.001) // Fixed small duration
+		operationsTotal.WithLabelValues("benchmark_test", "true", "").Inc()
 	}
 }
 
