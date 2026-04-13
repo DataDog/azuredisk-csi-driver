@@ -657,7 +657,7 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
-	mc := csiMetrics.NewCSIMetricContext("controller_publish_volume").WithBasicVolumeInfo(d.cloud.ResourceGroup, d.cloud.SubscriptionID, d.Name)
+	mc := csiMetrics.NewCSIMetricContext("controller_publish_volume").WithBasicVolumeInfo(d.cloud.ResourceGroup, d.cloud.SubscriptionID, d.Name).WithNodeLabel(string(nodeName))
 	isOperationSucceeded := false
 	defer func() {
 		mc.WithAdditionalVolumeInfo(consts.VolumeID, diskURI, consts.Node, string(nodeName)).Observe(isOperationSucceeded)
@@ -778,7 +778,7 @@ func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.Control
 		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
-	mc := csiMetrics.NewCSIMetricContext("controller_unpublish_volume").WithBasicVolumeInfo(d.cloud.ResourceGroup, d.cloud.SubscriptionID, d.Name)
+	mc := csiMetrics.NewCSIMetricContext("controller_unpublish_volume").WithBasicVolumeInfo(d.cloud.ResourceGroup, d.cloud.SubscriptionID, d.Name).WithNodeLabel(string(nodeName))
 	isOperationSucceeded := false
 	defer func() {
 		mc.WithAdditionalVolumeInfo(consts.VolumeID, diskURI, consts.Node, string(nodeName)).Observe(isOperationSucceeded)

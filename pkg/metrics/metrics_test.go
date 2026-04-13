@@ -380,6 +380,7 @@ func TestCSIMetricContext_EmptyLabels(t *testing.T) {
 	}
 }
 
+
 func BenchmarkCSIMetricContext_Observe(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
