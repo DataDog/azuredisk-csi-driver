@@ -30,6 +30,7 @@ const (
 
 	// Label keys for metrics
 	StorageAccountType = "storage_account_type"
+	NodeLabel          = "node"
 	FsckOutcome        = "fsck_outcome"
 	FsType             = "fs_type"
 )
@@ -43,7 +44,7 @@ var (
 			Buckets:        []float64{0.1, 0.2, 0.5, 1, 5, 10, 15, 20, 30, 40, 50, 60, 100, 200, 300},
 			StabilityLevel: metrics.ALPHA,
 		},
-		[]string{"operation", "success"},
+		[]string{"operation", "success", NodeLabel},
 	)
 
 	operationDurationWithLabels = metrics.NewHistogramVec(
@@ -64,7 +65,7 @@ var (
 			Help:           "Total number of CSI operations",
 			StabilityLevel: metrics.ALPHA,
 		},
-		[]string{"operation", "success"},
+		[]string{"operation", "success", NodeLabel},
 	)
 
 	formatAndMountOperationsTotal = metrics.NewCounterVec(
@@ -88,6 +89,7 @@ func init() {
 // CSIMetricContext represents the context for CSI operation metrics
 type CSIMetricContext struct {
 	operation     string
+	targetNode    string
 	volumeContext []interface{}
 	start         time.Time
 	labels        map[string]string
@@ -140,6 +142,12 @@ func (mc *CSIMetricContext) WithLabel(key, value string) *CSIMetricContext {
 	return mc
 }
 
+// WithNodeLabel sets the node targeted by this operation (e.g., attach/detach target)
+func (mc *CSIMetricContext) WithNodeLabel(node string) *CSIMetricContext {
+	mc.targetNode = node
+	return mc
+}
+
 // WithLogLevel sets the log level for the metric context
 func (mc *CSIMetricContext) WithLogLevel(level int32) *CSIMetricContext {
 	mc.logLevel = level
@@ -155,8 +163,8 @@ func (mc *CSIMetricContext) Observe(success bool) {
 	}
 
 	// Always record basic metrics
-	operationDuration.WithLabelValues(mc.operation, successStr).Observe(duration)
-	operationsTotal.WithLabelValues(mc.operation, successStr).Inc()
+	operationDuration.WithLabelValues(mc.operation, successStr, mc.targetNode).Observe(duration)
+	operationsTotal.WithLabelValues(mc.operation, successStr, mc.targetNode).Inc()
 
 	// Record detailed metrics if labels are present
 	if len(mc.labels) > 0 {
