@@ -30,6 +30,7 @@ const (
 
 	// Label keys for metrics
 	StorageAccountType = "storage_account_type"
+	TargetNode = "target_node"
 )
 
 var (
@@ -64,17 +65,30 @@ var (
 		},
 		[]string{"operation", "success"},
 	)
+
+	// Tracks attach/detach operations by target node for node-level alerting.
+	operationTotalByTargetNode = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      subSystem,
+			Name:           "operations_total_by_target_node",
+			Help:           "Total number of node-targeted CSI operations (attach/detach)",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"operation", "success", TargetNode},
+	)
 )
 
 func init() {
 	legacyregistry.MustRegister(operationDuration)
 	legacyregistry.MustRegister(operationDurationWithLabels)
 	legacyregistry.MustRegister(operationTotal)
+	legacyregistry.MustRegister(operationTotalByTargetNode)
 }
 
 // CSIMetricContext represents the context for CSI operation metrics
 type CSIMetricContext struct {
 	operation     string
+	targetNode    string
 	volumeContext []interface{}
 	start         time.Time
 	labels        map[string]string
@@ -127,6 +141,12 @@ func (mc *CSIMetricContext) WithLabel(key, value string) *CSIMetricContext {
 	return mc
 }
 
+// WithTargetNode sets the node targeted by this operation (e.g., attach/detach target)
+func (mc *CSIMetricContext) WithTargetNode(node string) *CSIMetricContext {
+	mc.targetNode = node
+	return mc
+}
+
 // WithLogLevel sets the log level for the metric context
 func (mc *CSIMetricContext) WithLogLevel(level int32) *CSIMetricContext {
 	mc.logLevel = level
@@ -144,6 +164,11 @@ func (mc *CSIMetricContext) Observe(success bool) {
 	// Always record basic metrics
 	operationDuration.WithLabelValues(mc.operation, successStr).Observe(duration)
 	operationTotal.WithLabelValues(mc.operation, successStr).Inc()
+
+	// Record node-scoped metrics for attach/detach operations
+	if mc.targetNode != "" {
+		operationTotalByTargetNode.WithLabelValues(mc.operation, successStr, mc.targetNode).Inc()
+	}
 
 	// Record detailed metrics if labels are present
 	if len(mc.labels) > 0 {
