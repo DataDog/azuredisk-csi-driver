@@ -13,6 +13,8 @@ test:
     - go test ./pkg/... -v
 
 build-docker-image:
+  variables:
+    BUILDER_IMAGE: compute-delivery/go
   extends: .build-docker-image
 
 build-nydus-image:
