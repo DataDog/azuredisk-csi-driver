@@ -380,6 +380,7 @@ func TestCSIMetricContext_EmptyLabels(t *testing.T) {
 	}
 }
 
+
 func BenchmarkCSIMetricContext_Observe(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -403,7 +404,7 @@ func BenchmarkMetricsRecordingOnly(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Directly record metrics without duration calculation
 		operationDuration.WithLabelValues("benchmark_test", "true").Observe(0.001) // Fixed small duration
-		operationTotal.WithLabelValues("benchmark_test", "true").Inc()
+		operationTotal.WithLabelValues("benchmark_test", "true", "").Inc()
 	}
 }
 
