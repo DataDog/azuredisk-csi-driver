@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/mount-utils"
 
 	consts "sigs.k8s.io/azuredisk-csi-driver/pkg/azureconstants"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/mounter"
@@ -130,16 +131,21 @@ func TestNodeStageVolume_BlockAccessType_EmitsSuccessMetric(t *testing.T) {
 // success-metric fix on the already-mounted early return in
 // NodePublishVolume (pkg/azuredisk/nodeserver.go line ~285 in the PR diff).
 //
-// Uses the same guard as TestNodePublishVolumeIdempotentMount: this path
-// requires the real mounter and root privileges to reach the
-// ensureMountPoint(target) == already-mounted branch.
+// Uses a fake mounter like TestNodePublishVolumeIdempotentMount so the
+// already-mounted branch is exercised without a real bind mount, which the
+// CI runner does not permit even as root (mount exit status 32).
 func TestNodePublishVolume_AlreadyMounted_EmitsSuccessMetric(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Getuid() != 0 {
-		t.Skip("requires root on Linux to exercise the already-mounted early return")
+	if runtime.GOOS == "windows" {
+		t.Skip("bind mount semantics are Linux-only")
 	}
 	cntl := gomock.NewController(t)
 	defer cntl.Finish()
 	d, _ := NewFakeDriver(cntl)
+	m := mount.NewFakeMounter([]mount.MountPoint{})
+	d.setMounter(&mount.SafeFormatAndMount{
+		Interface: m,
+		Exec:      &mounter.FakeSafeMounter{},
+	})
 
 	_ = makeDir(sourceTest)
 	_ = makeDir(targetTest)
